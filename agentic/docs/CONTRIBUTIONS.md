@@ -1,0 +1,2 @@
+# Contribution log
+Phase 1: ChatGPT/Codex generated the project scaffold and documentation and ran available environment checks. User selected the task combination, specified intermediate Python experience and supplied hardware constraints. User has not yet verified the Windows setup or reviewed the code. Update this file truthfully as the work progresses. Do not present AI-generated implementation as independently written by the candidate.
