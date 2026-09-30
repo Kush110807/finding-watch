@@ -30,3 +30,26 @@ class AppTests(unittest.TestCase):
         self.assertEqual(len(at.error),1)
 
 if __name__=='__main__': unittest.main()
+
+class ChatAppTests(unittest.TestCase):
+    def test_chat_submission(self):
+        from unittest.mock import patch
+        sample={'status':'answered','answer':'Coffee totals 3000.','trace':[],'model':'test'}
+        with patch('agent.ask',return_value=sample) as ask:
+            at=AppTest.from_file('../app.py').run()
+            at.checkbox[0].check().run()
+            at.text_input[0].input('Which category leads?').run()
+            next(b for b in at.button if b.label=='Ask Gemini').click().run()
+            self.assertFalse(at.exception)
+            ask.assert_called_once()
+            self.assertEqual(at.session_state['last_answer']['response']['answer'],'Coffee totals 3000.')
+    def test_missing_key_feedback(self):
+        from unittest.mock import patch
+        from agent import AgentError
+        with patch('agent.ask',side_effect=AgentError('No API key found.')):
+            at=AppTest.from_file('../app.py').run()
+            at.checkbox[0].check().run()
+            at.text_input[0].input('Question').run()
+            next(b for b in at.button if b.label=='Ask Gemini').click().run()
+            self.assertFalse(at.exception)
+            self.assertIn('No API key',at.error[0].value)

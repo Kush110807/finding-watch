@@ -19,3 +19,6 @@ Python 3.11 recommended for Windows. Streamlit for a small explainable UI, panda
 
 ## Phase 2 checkpoint
 CSV validation, all five tools, manual UI and structured JSON results are implemented. 26 tests pass in the build environment. Pending: Windows acceptance and Phase 3 actual model integration. Module layout deliberately kept to app.py and engine.py at this scale. Python 3.13 used by user; 3.12 in build environment.
+
+## Phase 3 candidate
+Added agent.py with official google-genai SDK, explicit five analysis schemas plus clarification control, manual tool execution, bounded loop and data-sharing UI. .env blank model falls back to documented gemini-3.8-flash. 42 automated tests pass; live model testing is pending. No persistent memory or filtered tool composition added.
