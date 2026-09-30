@@ -1,0 +1,6 @@
+student,group,study_hours,score
+A,Red,1,50
+B,Blue,2,60
+C,Red,3,70
+D,Blue,4,80
+E,Red,,90

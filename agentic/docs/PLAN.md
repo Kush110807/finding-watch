@@ -16,3 +16,6 @@ app.py: UI only; dataset.py: parsing and validation; tools/: five analysis opera
 
 ## Design decisions
 Python 3.11 recommended for Windows. Streamlit for a small explainable UI, pandas for computation, SQLite standard library for later memory. Gemini selected as initial API provider. Account availability, quota, cost and exact model remain unverified; no free-tier guarantee. No provider SDK until Phase 3. No key required for Phase 1.
+
+## Phase 2 checkpoint
+CSV validation, all five tools, manual UI and structured JSON results are implemented. 26 tests pass in the build environment. Pending: Windows acceptance and Phase 3 actual model integration. Module layout deliberately kept to app.py and engine.py at this scale. Python 3.13 used by user; 3.12 in build environment.
