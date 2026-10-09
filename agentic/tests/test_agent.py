@@ -92,9 +92,30 @@ class AgentTests(unittest.TestCase):
             key,model=configuration()
             self.assertEqual(key,''); self.assertTrue(model)
     def test_schema_sdk_validation(self):
-        self.assertEqual(len(DECLARATIONS),6)
+        self.assertEqual(len(DECLARATIONS),7)
         cfg=types.GenerateContentConfig(tools=[types.Tool(function_declarations=DECLARATIONS)])
-        self.assertEqual(len(cfg.tools[0].function_declarations),6)
+        self.assertEqual(len(cfg.tools[0].function_declarations),7)
+    def test_m2_proposal_is_pending_not_calculated(self):
+        proposal={'baseline':{'group':'category','metric':'revenue','operation':'sum','filters':[]},
+                  'challenged':{'group':'category','metric':'revenue','operation':'sum',
+                                'filters':[{'field':'category','operator':'eq','value':'Coffee'}]}}
+        out=execute(self.df,'What changes for Coffee only?',
+                    lambda _:call('propose_grouped_comparison',proposal))
+        self.assertEqual(out['status'],'comparison_pending')
+        self.assertFalse(out['calculation_verified'])
+        self.assertTrue(out['pending_comparison']['confirmation_required'])
+        self.assertNotIn('comparison',out)
+
+    def test_m2_rejects_invalid_model_proposal(self):
+        proposal={'baseline':{'group':'category','metric':'revenue','operation':'sum','filters':[]},
+                  'challenged':{'group':'category','metric':'revenue','operation':'sum',
+                                'filters':[{'field':'category','operator':'eq','value':'Coffee'},
+                                           {'field':'revenue','operator':'gt','value':'10'}]}}
+        responses=iter([call('propose_grouped_comparison',proposal),text('It changed.')])
+        out=execute(self.df,'Challenge both filters',lambda _:next(responses))
+        self.assertEqual(out['status'],'unverified')
+        self.assertIn('exactly one',out['trace'][0]['result']['error'])
+
     def test_initial_request_contains_no_rows(self):
         def generate(contents):
             self.assertNotIn('Coffee',contents[0].parts[0].text)

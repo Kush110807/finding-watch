@@ -116,5 +116,60 @@ class ChatAppTests(unittest.TestCase):
             self.assertFalse(at.exception)
             self.assertIn('No API key',at.error[0].value)
 
-if __name__=='__main__':
-    unittest.main()
+class M2ChallengeAppTests(unittest.TestCase):
+    """Run on Windows with real Streamlit and SDK packages (no live model calls)."""
+
+    @staticmethod
+    def widget(at, collection, label):
+        return next(item for item in getattr(at,collection) if item.label==label)
+
+    def test_manual_comparison_requires_explicit_confirmation(self):
+        at=_launch()
+        at.selectbox[0].select('Summarise groups').run()
+        self.widget(at,'selectbox','Group by').select('category').run()
+        _run_button(at)
+        self.assertFalse(at.exception)
+        self.assertNotIn('last_manual_comparison',at.session_state)
+        self.widget(at,'selectbox','Challenged filter column').select('category').run()
+        self.widget(at,'text_input','Challenged filter value').input('Coffee').run()
+        self.assertFalse(at.exception)
+        self.assertNotIn('last_manual_comparison',at.session_state)
+        self.widget(at,'button','Run confirmed manual comparison').click().run()
+        self.assertFalse(at.exception)
+        result=at.session_state['last_manual_comparison']['result']
+        self.assertEqual(result['status'],'completed')
+        self.assertEqual(result['accounting']['baseline']['selected_rows'],4)
+        self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
+        self.widget(at,'text_input','Challenged filter value').input('Snacks').run()
+        self.assertFalse(at.exception)
+        self.assertIn('last_manual_comparison',at.session_state)
+        self.assertFalse(any('Download manual comparison JSON'==b.label for b in at.button))
+
+    def test_ai_comparison_pending_then_user_confirmed(self):
+        from comparisons import prepare_comparison
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        base={'tool':'grouped_summary','arguments':{'group':'category','metric':'revenue','operation':'sum'},'filters':[]}
+        challenged={**base,'filters':[{'field':'region','operator':'eq','value':'North'}]}
+        plan=prepare_comparison(df,base,challenged)
+        sample={'status':'comparison_pending','answer':'Proposal pending user confirmation.',
+                'pending_comparison':plan,'trace':[{'tool':'propose_grouped_comparison',
+                    'arguments':{},'result':{'proposal':plan,'not_calculated':True}}],
+                'calculation_verified':False,'explanation_verified':False,
+                'dataset_fingerprint_sha256':plan['dataset_fingerprint_sha256']}
+        with patch('agent.ask',return_value=sample):
+            at=_launch()
+            self.widget(at,'checkbox','Use Gemini for this question: send the question, column names/types and analysis results (which may include matching rows).').check().run()
+            self.widget(at,'text_input','Question').input('What if North only?').run()
+            next(b for b in at.button if b.label=='Ask Gemini').click().run()
+            self.assertFalse(at.exception)
+            self.assertNotIn('last_ai_comparison',at.session_state)
+            self.widget(at,'button','Confirm and run proposed comparison').click().run()
+            self.assertFalse(at.exception)
+            result=at.session_state['last_ai_comparison']['result']
+            self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
+            self.assertEqual(result['status'],'completed')
+            self.widget(at,'text_input','Question').input('Some other question').run()
+            self.assertFalse(at.exception)
+            self.assertTrue(self.widget(at,'button','Confirm and run proposed comparison').disabled)
+
+if __name__=='__main__': unittest.main()

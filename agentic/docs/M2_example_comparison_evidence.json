@@ -1,0 +1,302 @@
+{
+  "status": "completed",
+  "dataset_fingerprint_sha256": "176aaa57140ee857288dad37c121ac678c002a293a60be4806859ea49361b8ab",
+  "changed_condition": {
+    "kind": "added",
+    "before": null,
+    "after": {
+      "field": "status",
+      "operator": "eq",
+      "value": "completed"
+    }
+  },
+  "baseline_spec": {
+    "spec_version": 1,
+    "tool": "grouped_summary",
+    "arguments": {
+      "group": "category",
+      "metric": "revenue",
+      "operation": "sum"
+    },
+    "filters": [],
+    "display_limit": 100
+  },
+  "challenged_spec": {
+    "spec_version": 1,
+    "tool": "grouped_summary",
+    "arguments": {
+      "group": "category",
+      "metric": "revenue",
+      "operation": "sum"
+    },
+    "filters": [
+      {
+        "field": "status",
+        "operator": "eq",
+        "value": "completed"
+      }
+    ],
+    "display_limit": 100
+  },
+  "baseline": {
+    "tool": "grouped_summary",
+    "metadata": {
+      "group_column": "category",
+      "metric": "revenue",
+      "operation": "sum",
+      "policy": "Missing group labels retained as null; missing metrics excluded; all-missing sums remain null."
+    },
+    "rows": [
+      {
+        "group_value": "Coffee",
+        "value": 510,
+        "row_count": 3,
+        "non_missing_metric_count": 3
+      },
+      {
+        "group_value": "Snacks",
+        "value": 280,
+        "row_count": 2,
+        "non_missing_metric_count": 2
+      }
+    ],
+    "dataset_id": "176aaa57140ee857",
+    "evidence": {
+      "dataset_fingerprint_sha256": "176aaa57140ee857288dad37c121ac678c002a293a60be4806859ea49361b8ab",
+      "executed_spec": {
+        "spec_version": 1,
+        "tool": "grouped_summary",
+        "arguments": {
+          "group": "category",
+          "metric": "revenue",
+          "operation": "sum"
+        },
+        "filters": [],
+        "display_limit": 100
+      },
+      "accounting": {
+        "input_rows": 5,
+        "selected_rows": 5,
+        "excluded_by_filters": 0,
+        "filters_sequential": [],
+        "operation_exclusions": {
+          "missing_group_labels_excluded": 0,
+          "missing_group_labels_included": 0,
+          "missing_metric_excluded_from_values": 0
+        }
+      },
+      "display": {
+        "limit": 100,
+        "total_result_rows": 2,
+        "returned_rows": 2,
+        "truncated": false
+      },
+      "warnings": [],
+      "results": [
+        {
+          "group_value": "Coffee",
+          "value": 510,
+          "row_count": 3,
+          "non_missing_metric_count": 3
+        },
+        {
+          "group_value": "Snacks",
+          "value": 280,
+          "row_count": 2,
+          "non_missing_metric_count": 2
+        }
+      ],
+      "calculation_status": "completed"
+    }
+  },
+  "challenged": {
+    "tool": "grouped_summary",
+    "metadata": {
+      "group_column": "category",
+      "metric": "revenue",
+      "operation": "sum",
+      "policy": "Missing group labels retained as null; missing metrics excluded; all-missing sums remain null."
+    },
+    "rows": [
+      {
+        "group_value": "Snacks",
+        "value": 280,
+        "row_count": 2,
+        "non_missing_metric_count": 2
+      },
+      {
+        "group_value": "Coffee",
+        "value": 210,
+        "row_count": 2,
+        "non_missing_metric_count": 2
+      }
+    ],
+    "dataset_id": "176aaa57140ee857",
+    "evidence": {
+      "dataset_fingerprint_sha256": "176aaa57140ee857288dad37c121ac678c002a293a60be4806859ea49361b8ab",
+      "executed_spec": {
+        "spec_version": 1,
+        "tool": "grouped_summary",
+        "arguments": {
+          "group": "category",
+          "metric": "revenue",
+          "operation": "sum"
+        },
+        "filters": [
+          {
+            "field": "status",
+            "operator": "eq",
+            "value": "completed"
+          }
+        ],
+        "display_limit": 100
+      },
+      "accounting": {
+        "input_rows": 5,
+        "selected_rows": 4,
+        "excluded_by_filters": 1,
+        "filters_sequential": [
+          {
+            "field": "status",
+            "operator": "eq",
+            "value": "completed",
+            "eligible_before": 5,
+            "eligible_after": 4,
+            "newly_excluded": 1
+          }
+        ],
+        "operation_exclusions": {
+          "missing_group_labels_excluded": 0,
+          "missing_group_labels_included": 0,
+          "missing_metric_excluded_from_values": 0
+        }
+      },
+      "display": {
+        "limit": 100,
+        "total_result_rows": 2,
+        "returned_rows": 2,
+        "truncated": false
+      },
+      "warnings": [],
+      "results": [
+        {
+          "group_value": "Snacks",
+          "value": 280,
+          "row_count": 2,
+          "non_missing_metric_count": 2
+        },
+        {
+          "group_value": "Coffee",
+          "value": 210,
+          "row_count": 2,
+          "non_missing_metric_count": 2
+        }
+      ],
+      "calculation_status": "completed"
+    }
+  },
+  "comparison": {
+    "all_results": [
+      {
+        "group_value": "Coffee",
+        "baseline_present": true,
+        "challenged_present": true,
+        "baseline_value": 510,
+        "challenged_value": 210,
+        "difference_challenged_minus_baseline": -300,
+        "baseline_row_count": 3,
+        "challenged_row_count": 2,
+        "baseline_non_missing_metric_count": 3,
+        "challenged_non_missing_metric_count": 2
+      },
+      {
+        "group_value": "Snacks",
+        "baseline_present": true,
+        "challenged_present": true,
+        "baseline_value": 280,
+        "challenged_value": 280,
+        "difference_challenged_minus_baseline": 0,
+        "baseline_row_count": 2,
+        "challenged_row_count": 2,
+        "baseline_non_missing_metric_count": 2,
+        "challenged_non_missing_metric_count": 2
+      }
+    ],
+    "displayed_results": [
+      {
+        "group_value": "Coffee",
+        "baseline_present": true,
+        "challenged_present": true,
+        "baseline_value": 510,
+        "challenged_value": 210,
+        "difference_challenged_minus_baseline": -300,
+        "baseline_row_count": 3,
+        "challenged_row_count": 2,
+        "baseline_non_missing_metric_count": 3,
+        "challenged_non_missing_metric_count": 2
+      },
+      {
+        "group_value": "Snacks",
+        "baseline_present": true,
+        "challenged_present": true,
+        "baseline_value": 280,
+        "challenged_value": 280,
+        "difference_challenged_minus_baseline": 0,
+        "baseline_row_count": 2,
+        "challenged_row_count": 2,
+        "baseline_non_missing_metric_count": 2,
+        "challenged_non_missing_metric_count": 2
+      }
+    ],
+    "display": {
+      "total_groups": 2,
+      "returned_groups": 2,
+      "truncated": false,
+      "limit": 100
+    },
+    "baseline_leaders": [
+      "Coffee"
+    ],
+    "challenged_leaders": [
+      "Snacks"
+    ],
+    "leader_changed": true
+  },
+  "accounting": {
+    "baseline": {
+      "input_rows": 5,
+      "selected_rows": 5,
+      "excluded_by_filters": 0,
+      "filters_sequential": [],
+      "operation_exclusions": {
+        "missing_group_labels_excluded": 0,
+        "missing_group_labels_included": 0,
+        "missing_metric_excluded_from_values": 0
+      }
+    },
+    "challenged": {
+      "input_rows": 5,
+      "selected_rows": 4,
+      "excluded_by_filters": 1,
+      "filters_sequential": [
+        {
+          "field": "status",
+          "operator": "eq",
+          "value": "completed",
+          "eligible_before": 5,
+          "eligible_after": 4,
+          "newly_excluded": 1
+        }
+      ],
+      "operation_exclusions": {
+        "missing_group_labels_excluded": 0,
+        "missing_group_labels_included": 0,
+        "missing_metric_excluded_from_values": 0
+      }
+    }
+  },
+  "warnings": [
+    "The two definitions answer different inclusion questions. A changed leader does not establish that the original calculation was wrong."
+  ],
+  "calculation_evidence": "Deterministic Python grouped_summary on the full selected rows; model explanations are not verified."
+}

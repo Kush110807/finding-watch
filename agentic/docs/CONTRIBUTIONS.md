@@ -8,3 +8,12 @@ Phase 3: Codex implemented Gemini integration and simulated-response tests. User
 ## M1 work (9 October 2026)
 
 AI-assisted implementation added the versioned specification validator, conservative CSV type handling, composable filtered engine, evidence/accounting, minimal state-binding changes, optional existing-page manual filters, M0 synthetic-only live check script, tests and documentation. The user specified the M0/M1 scope, correctness requirements and independent review gate. The original Phase 3 repository and history were preserved. The implementation has **not** received independent reviewer acceptance. The AI did **not** use the user's private credentials or successfully verify the live provider. Any subsequent user testing or source adjustments must be documented separately. This log is an honest contribution record; do not present AI-generated material as wholly unaided work.
+
+
+## Review outcomes reported by user (9 October 2026)
+
+The user's independent review accepted repaired M1 commit `4eb7ec4fffa4de1709bd34fc099e1b613c7403e1`, reporting 54 deterministic tests and 76 full Windows tests passed. The user also reported real M0 grouped, monthly and clarification Gemini calls passed after correcting the local model setting. These reports were **not** re-executed by the AI implementation environment, which does not have access to the user's private key.
+
+## M2 work (9 October 2026)
+
+Under user-approved restricted scope, AI-assisted implementation added one-condition grouped comparison, condition preview, full-data evidence, exact integer deltas, absent/null/zero group distinctions, ties, minimal Streamlit confirmation controls, an agent proposal-only workflow tool, synthetic live-comparison script, M2 tests and documentation. The user defined acceptance criteria and will run independent review. M2 is **not** accepted until review. Agent/SDK/UI/live verification results must be separately reported; no API key was accessed, committed or packaged.

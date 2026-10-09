@@ -301,8 +301,8 @@ def correlation(df,x,y):
 TOOLS={f.__name__:f for f in (inspect_dataset,filter_rows,grouped_summary,time_trend,correlation)}
 
 
-def execute_spec(df,raw_spec):
-    """Run validated filters on the FULL dataframe; only display is truncated."""
+def _execute_spec_core(df,raw_spec,*,include_full_rows=False):
+    """Run validated filters on full data; optional private full rows for M2 comparisons."""
     try:
         spec=AnalysisSpec.parse(raw_spec)
     except SpecError as exc:
@@ -380,6 +380,7 @@ def execute_spec(df,raw_spec):
             and abs(row['value']) > 2**53 for row in payload['rows']):
         warnings.append('Large integer results are exact in JSON; some browser and spreadsheet displays may round values beyond 2**53.')
     total_result_rows=n if tool=='filter_rows' else len(payload['rows'])
+    full_rows = payload['rows'] if include_full_rows else None
     if total_result_rows>spec.display_limit:
         payload['rows']=payload['rows'][:spec.display_limit]
     display={'limit':spec.display_limit,'total_result_rows':total_result_rows,
@@ -393,7 +394,12 @@ def execute_spec(df,raw_spec):
                                 'display':display,'warnings':warnings,
                                 'results':payload['rows'],
                                 'calculation_status':'completed'}})
-    return payload
+    return (payload, full_rows) if include_full_rows else payload
+
+
+def execute_spec(df, raw_spec):
+    """Public M1 executor; returned rows and evidence respect the requested display cap."""
+    return _execute_spec_core(df, raw_spec)
 
 
 def run_tool(df,name,arguments):
