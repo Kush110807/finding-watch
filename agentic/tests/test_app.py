@@ -172,4 +172,69 @@ class M2ChallengeAppTests(unittest.TestCase):
             self.assertFalse(at.exception)
             self.assertTrue(self.widget(at,'button','Confirm and run proposed comparison').disabled)
 
-if __name__=='__main__': unittest.main()
+class P1P3UiAppTests(unittest.TestCase):
+    """Requires Streamlit + pinned google-genai; never makes live provider calls."""
+    @staticmethod
+    def field(at, collection, label):
+        return next(item for item in getattr(at,collection) if item.label==label)
+
+    @staticmethod
+    def mocked_answer(status='clarification', answer='Which column and measure?', trace=None):
+        return {'status':status, 'answer':answer,'trace':trace or [],
+                'calculation_verified':False,'explanation_verified':False}
+
+    def submit_question(self, at, text):
+        self.field(at,'checkbox','Use Gemini for this question: send the question, column names/types and analysis results (which may include matching rows).').check().run()
+        self.field(at,'text_input','Question').input(text).run()
+        self.field(at,'button','Ask Gemini').click().run()
+        return at
+
+    def test_best_selling_product_clarification_keeps_original_question(self):
+        with patch('agent.ask',return_value=self.mocked_answer()) as mocked:
+            at=self.submit_question(_launch(),'Which is the best-selling product?')
+            self.assertFalse(at.exception)
+            self.assertEqual(at.session_state['last_answer']['submitted_question'],'Which is the best-selling product?')
+            self.assertNotIn('last_clarified',at.session_state)
+            self.assertTrue(any('no column containing' in str(w.value).lower() for w in at.warning))
+            # No implicit selections and no analysis before explicitly submitting.
+            self.assertIsNone(self.field(at,'selectbox','Which column should be compared?').value)
+            self.assertIsNone(self.field(at,'selectbox','Which calculation should define “best”?').value)
+            self.field(at,'selectbox','Which column should be compared?').select('category').run()
+            self.field(at,'selectbox','Which calculation should define “best”?').select('Total of “units”').run()
+            self.assertNotIn('last_clarified',at.session_state)
+            self.field(at,'button','Analyse with my choices').click().run()
+            self.assertFalse(at.exception)
+            result=at.session_state['last_clarified']['output']
+            self.assertEqual(result['tool'],'grouped_summary')
+            self.assertEqual(result['evidence']['executed_spec']['arguments']['metric'],'units')
+            self.assertEqual(result['rows'][0]['value'],100)  # Coffee total units
+            mocked.assert_called_once()
+            self.field(at,'text_input','Question').input('What changed?').run()
+            self.assertFalse(at.exception)
+            self.assertTrue(any('pending question edits' in str(w.value).lower() for w in at.warning))
+
+    def test_clarification_explicit_count_rows_not_orders(self):
+        with patch('agent.ask',return_value=self.mocked_answer()):
+            at=self.submit_question(_launch(),'Which category has the most sales?')
+            self.field(at,'selectbox','Which column should be compared?').select('category').run()
+            self.field(at,'selectbox','Which calculation should define “best”?').select('Record count (rows)').run()
+            self.field(at,'button','Analyse with my choices').click().run()
+            out=at.session_state['last_clarified']['output']
+            self.assertEqual(out['evidence']['executed_spec']['arguments']['operation'],'count_rows')
+            self.assertEqual({r['group_value']:r['value'] for r in out['rows']},{'Coffee':2,'Snacks':2})
+
+    def test_provider_status_and_unverified_narrative_are_separate(self):
+        with patch('agent.ask',return_value=self.mocked_answer('error','Quota unavailable.')):
+            at=self.submit_question(_launch(),'What is the top category?')
+            self.assertFalse(at.exception)
+            self.assertTrue(any('Quota unavailable.' in str(e.value) for e in at.error))
+
+    def test_saved_findings_are_planned_only(self):
+        at=_launch()
+        self.assertFalse(at.exception)
+        self.assertNotIn('saved_findings',at.session_state)
+        self.assertTrue(any('Saved Findings' in str(c.value) and 'planned' in str(c.value)
+                            for c in at.get('caption')))
+
+if __name__ == "__main__":
+    unittest.main()

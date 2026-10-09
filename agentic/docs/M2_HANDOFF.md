@@ -1,4 +1,6 @@
-# Finding Watch M2 — Challenge a Finding (candidate, review required)
+# Finding Watch M2 — Challenge a Finding (accepted and frozen)
+
+> Review update: Independent source review, 105 Windows tests, a confirmed live Gemini golden comparison, and manual browser Challenge verification all passed as reported by the review chat. M2 was accepted and frozen at `4bf170a16fafe420b1c633e4b13fe96b7f76c1fe`. Historical candidate-time verification statements below are preserved as records of the earlier handoff, not the current status.
 
 ## Baseline and scope
 
