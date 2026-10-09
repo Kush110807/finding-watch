@@ -1,3 +1,5 @@
+> P1–P3 UI repairs are a review candidate based on commit 98b5e066a46f9cbd7d7d48193ca7abf2ff3bfb51. For remaining Windows/browser checks see `agentic/docs/UI_REPAIR_WINDOWS.md`. No M3, persistence or Revisit.
+
 # BYTE Applied ML — Finding Watch P1–P3 UI review candidate
 
 **Scope:** Five distinct Phase 3 analytical tools; accepted M1 composable evidence; M2 restricted, confirmation-gated Challenge a Finding. The user reports **M1 accepted** after independent and Windows checks, including live M0 smoke checks. **M2 is accepted and frozen** at `4bf170a16fafe420b1c633e4b13fe96b7f76c1fe` following independent review, 105 Windows tests, confirmed Gemini golden comparison and successful manual browser Challenge verification (all reported by the reviewer). **The new P1–P3 UI pass is a candidate awaiting review.** Revisit, SQLite memory and forecasting have not been implemented. This project addresses the Basic Agentic Task only.

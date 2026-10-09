@@ -134,3 +134,39 @@ def chart_safe(rows):
     """Avoid converting exact >2**53 integer evidence into JS float charts."""
     return bool(rows) and all(type(r.get('value')) in (int,float)
                               and abs(r['value'])<=2**53 for r in rows)
+
+
+def display_rows(rows):
+    """Format ORIGINAL evidence scalars before pandas gets an opportunity to
+    infer a float column from a large integer beside a null.
+
+    Presentation strings are intentionally not numeric table data: the exact
+    original evidence remains available for calculations and JSON downloads.
+    """
+    rendered=[]
+    for record in rows:
+        item={}
+        for key,value in record.items():
+            if key=='group_value':
+                item[key]=label(value)
+            elif value is None:
+                item[key]='No numeric value' if key=='value' else 'Missing'
+            elif type(value) is int:
+                item[key]=number(value)
+            elif type(value) is float:
+                item[key]=number(value)
+            else:
+                item[key]=str(value)
+        rendered.append(item)
+    return rendered
+
+
+def confirmed_comparison_matches(stored, plan, binding):
+    """Approval status depends on the currently presented exact plan/baseline.
+
+    This does not remove approved evidence from state; it prevents stale data
+    from being presented as the result of edited controls or a different source.
+    """
+    return bool(stored and plan and stored.get('plan')==plan
+                and stored.get('baseline_binding')==binding
+                and stored.get('result',{}).get('status')=='completed')

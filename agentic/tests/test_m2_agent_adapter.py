@@ -104,6 +104,28 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result['status'],'unverified')
         self.assertIn('object',result['trace'][0]['result']['error'])
 
+    def test_contextual_clarification_is_separate_from_unchanged_original_question(self):
+        captured=[]
+        def fake_generate(contents):
+            request=json.loads(contents[0].parts[0].text)
+            captured.append(request)
+            return self.fc('request_clarification',{'question':'Which period should be analysed?'})
+        out=self.agent.execute(self.df,'What happened on 01/02/2026?',fake_generate,
+            clarification_context='Use DD/MM/YYYY for the date column.')
+        self.assertEqual(out['question'],'What happened on 01/02/2026?')
+        self.assertEqual(out['status'],'clarification')
+        self.assertEqual(captured[0]['question'],'What happened on 01/02/2026?')
+        self.assertEqual(captured[0]['user_provided_clarification_context'],
+                         'Use DD/MM/YYYY for the date column.')
+        self.assertNotIn('tool',captured[0])
+
+    def test_contextual_clarification_validation(self):
+        for malformed in ([],{},'', '  ', 'a'*2001):
+            with self.subTest(malformed=type(malformed).__name__):
+                with self.assertRaises(self.agent.AgentError):
+                    self.agent.execute(self.df,'Valid original question',lambda _:None,
+                                       clarification_context=malformed)
+
     def test_five_existing_tools_remain_distinct(self):
         from engine import TOOLS
         self.assertEqual(set(TOOLS),{'inspect_dataset','filter_rows','grouped_summary','time_trend','correlation'})

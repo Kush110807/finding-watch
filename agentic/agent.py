@@ -95,16 +95,19 @@ Five analytical tools are read-only. propose_grouped_comparison is a proposal-on
 Never claim that an unrelated successful tool establishes the requested answer. If tools fail, say the calculation could not be completed.
 No forecasting, significance tests, causal inference, arbitrary expressions or derived metrics are supported.
 The returned evidence contains the executed specification, row counts and missing-value exclusions. Use only its actual results for numeric claims.
-A date format must be explicit. If dates like 01/02/2026 are ambiguous, ask for clarification.
+A date format must be explicit. If dates like 01/02/2026 are ambiguous, ask for clarification. If separate user-provided clarification context is supplied, apply it only to the unchanged original question, and still use validated tool calls for any calculation; do not treat clarification prose as executable specifications.
 Explain results with tool names and relevant caveats. Do not invent derived percentages. Questions are independent except when a submitted grouped baseline is explicitly provided for a proposed challenge.
 '''
 
-def execute(df,question,generate,*,baseline_spec=None):
+def execute(df,question,generate,*,baseline_spec=None,clarification_context=None):
     if not isinstance(question,str) or not question.strip() or len(question)>4000:
         raise AgentError('Enter a question between 1 and 4,000 characters.')
+    if clarification_context is not None and (not isinstance(clarification_context,str) or not clarification_context.strip() or len(clarification_context)>2000):
+        raise AgentError('Clarification details must be 1–2,000 characters of text.')
     schema=[{'name':c,'dtype':str(df[c].dtype),'interpretation':('numeric' if c in numeric_columns(df) else 'text_or_identifier')} for c in df]
     initial=json.dumps({'question':question,'schema':schema,
-                        'submitted_baseline_grouped_spec':baseline_spec},ensure_ascii=False)
+                        'submitted_baseline_grouped_spec':baseline_spec,
+                        'user_provided_clarification_context':clarification_context},ensure_ascii=False)
     if len(initial)>20000:
         raise AgentError('Column names are too large to send. Shorten them first.')
     contents=[types.Content(role='user',parts=[types.Part.from_text(text=initial)])]
@@ -196,7 +199,7 @@ def execute(df,question,generate,*,baseline_spec=None):
         contents.append(types.Content(role='user',parts=replies))
     return {'status':'limited','answer':'Model round limit reached. Ask a narrower question.','trace':trace,'question':question,'dataset_fingerprint_sha256':fingerprint}
 
-def ask(df,question,*,baseline_spec=None):
+def ask(df,question,*,baseline_spec=None,clarification_context=None):
     key,model=configuration()
     client=client_for(key)
     config=types.GenerateContentConfig(system_instruction=SYSTEM,
@@ -205,6 +208,6 @@ def ask(df,question,*,baseline_spec=None):
         max_output_tokens=2048)
     try:
         return {**execute(df,question,lambda contents:client.models.generate_content(
-            model=model,contents=contents,config=config),baseline_spec=baseline_spec),'model':model}
+            model=model,contents=contents,config=config),baseline_spec=baseline_spec,clarification_context=clarification_context),'model':model}
     finally:
         client.close()

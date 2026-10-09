@@ -5,10 +5,88 @@ import pandas as pd
 import streamlit as st
 from engine import AnalysisError, load_csv, numeric_columns, run_tool
 from comparisons import prepare_comparison, execute_comparison
-from presentation import metric_choices,group_candidates,missing_product_context,filter_description
+from presentation import (metric_choices,group_candidates,missing_product_context,
+                          filter_description,confirmed_comparison_matches)
 from ui_components import analysis_result,comparison_result,source_definition,evidence_download
 
 ROOT=Path(__file__).resolve().parent
+
+
+def show_challenge_for_submitted_grouped(df, columns, baseline_output, baseline_binding, *,
+                                         prefix, title, button_label):
+    """An explicitly identified, submitted grouped finding is the ONLY baseline.
+
+    Source choice is never inferred from an older result; each surface has its
+    own widget and confirmation namespace to prevent accidental cross-binding.
+    """
+    if baseline_output.get('tool') != 'grouped_summary':
+        return
+    baseline_spec=baseline_output['evidence']['executed_spec']
+    store_key=f'last_{prefix}_comparison'
+    st.header('Challenge' if prefix=='manual' else 'Challenge clarified finding')
+    st.caption('Change exactly one filter on this submitted result. The comparison runs only after confirmation.')
+    with st.expander(title,expanded=False):
+        st.caption('Baseline: '+baseline_binding['label'])
+        conditions=baseline_spec['filters']
+        options=(['Add condition'] if len(conditions)<8 else []) + (
+            ['Remove condition','Replace condition'] if conditions else [])
+        mode=st.selectbox('Change exactly one condition',options,key=f'm2_{prefix}_mode')
+        updated=[dict(item) for item in conditions]
+        index=None
+        if mode in ('Remove condition','Replace condition'):
+            index=st.selectbox('Condition to change',range(len(conditions)),
+                format_func=lambda i:f'{i+1}: {conditions[i]}',key=f'm2_{prefix}_index')
+        if mode!='Remove condition':
+            field=st.selectbox('Challenged filter column',columns,key=f'm2_{prefix}_column')
+            op=st.selectbox('Challenged filter operator',
+                ['eq','ne','gt','ge','lt','le','contains','is_missing','not_missing'],
+                key=f'm2_{prefix}_operator')
+            condition={'field':field,'operator':op}
+            if op not in ('is_missing','not_missing'):
+                condition['value']=st.text_input('Challenged filter value',key=f'm2_{prefix}_value')
+        if mode=='Add condition': updated.append(condition)
+        elif mode=='Remove condition': updated.pop(index)
+        else: updated[index]=condition
+        challenged_spec={**baseline_spec,'filters':updated}
+        try:
+            plan=prepare_comparison(df,baseline_spec,challenged_spec)
+        except AnalysisError as exc:
+            st.info('Comparison definition is not ready: '+str(exc))
+            return
+        confirmed=st.session_state.get(store_key)
+        active=confirmed_comparison_matches(confirmed,plan,baseline_binding)
+        status_notice=st.empty()
+        if active:
+            status_notice.success('CONFIRMED — this exact comparison has been calculated and approved by you.')
+        else:
+            status_notice.warning('PENDING CONFIRMATION — these definitions have not been approved or calculated together.')
+            if confirmed:
+                st.info('Challenge edits are pending. The previous comparison is hidden until this exact definition is confirmed.')
+        change=plan['changed_condition']
+        st.caption('One changed condition: '+change['kind'])
+        if change.get('before'):st.caption('Before: '+filter_description(change['before']))
+        if change.get('after'):st.caption('After: '+filter_description(change['after']))
+        source_definition(plan['baseline_spec'],'Baseline · submitted')
+        source_definition(plan['challenged_spec'],'Challenge · '+('confirmed' if active else 'pending'))
+        if st.checkbox('Show exact Challenge specifications',value=False,key=f'm2_{prefix}_show_specs'):
+            st.json(plan['baseline_spec']);st.json(plan['challenged_spec'])
+        if not active and st.button(button_label,key=f'm2_{prefix}_confirm'):
+            try:
+                result=execute_comparison(df,baseline_spec,challenged_spec,
+                    expected_fingerprint=plan['dataset_fingerprint_sha256'])
+                st.session_state[store_key]={
+                    'plan':plan,'baseline_binding':baseline_binding,'result':result}
+                active=True
+                status_notice.success('CONFIRMED — comparison calculated from both exact definitions.')
+            except AnalysisError as exc:
+                st.error('Comparison could not be completed: '+str(exc))
+    # Outside the Challenge expander: confirmed result remains easy to find,
+    # and the evidence expander in comparison_result is not nested.
+    record=st.session_state.get(store_key)
+    if confirmed_comparison_matches(record,plan,baseline_binding):
+        comparison_result(record['result'],heading='User-confirmed Challenge',
+                          filename=f'{prefix}_comparison.json')
+
 st.set_page_config(page_title='Finding Watch · BYTE',page_icon='📊',layout='wide')
 st.markdown("""<style>
 :root {color-scheme:light}
@@ -110,64 +188,13 @@ if saved_manual:
         st.warning('Pending edits: the previous result is hidden. Click Run analysis to submit the new settings. Old calculations have not changed.')
     else:
         analysis_result(saved_manual['output'],heading='Submitted calculation')
-# Manual M2: the previous SUBMITTED grouped analysis, never unsaved controls,
-# is the only baseline. The changed definition is always previewed first.
-if (saved_manual and saved_manual['submission']==manual_submission
-        and saved_manual['output']['tool']=='grouped_summary'):
-    st.header('Challenge')
-    st.caption('Change exactly one filter. Two definitions are previewed before approval.')
-    with st.expander('Challenge this submitted grouped finding', expanded=False):
-        manual_plan=None
-        baseline_spec=saved_manual['output']['evidence']['executed_spec']
-        before_conditions=baseline_spec['filters']
-        available_actions=(['Add condition'] if len(before_conditions)<8 else []) + (
-            ['Remove condition','Replace condition'] if before_conditions else [])
-        mode=st.selectbox('Change exactly one condition', available_actions, key='m2_manual_mode')
-        challenged_conditions=[dict(c) for c in before_conditions]
-        index=None
-        if mode in ('Remove condition','Replace condition'):
-            index=st.selectbox('Condition to change',range(len(before_conditions)),
-                               format_func=lambda i:f'{i+1}: {before_conditions[i]}',key='m2_index')
-        if mode!='Remove condition':
-            fcol=st.selectbox('Challenged filter column',cols,key='m2_column')
-            op=st.selectbox('Challenged filter operator',
-                ['eq','ne','gt','ge','lt','le','contains','is_missing','not_missing'],key='m2_operator')
-            condition={'field':fcol,'operator':op}
-            if op not in ('is_missing','not_missing'):
-                condition['value']=st.text_input('Challenged filter value',key='m2_value')
-        if mode=='Add condition':
-            challenged_conditions.append(condition)
-        elif mode=='Remove condition':
-            challenged_conditions.pop(index)
-        else:
-            challenged_conditions[index]=condition
-        challenged_spec={**baseline_spec,'filters':challenged_conditions}
-        try:
-            manual_plan=prepare_comparison(df,baseline_spec,challenged_spec)
-            st.warning('PENDING — comparison not calculated. Inspect both definitions before approving.')
-            st.markdown('**Exactly one changed condition**')
-            changed=manual_plan['changed_condition']
-            st.caption('Change: '+changed['kind'])
-            if changed.get('before'): st.caption('Before: '+filter_description(changed['before']))
-            if changed.get('after'): st.caption('After: '+filter_description(changed['after']))
-            source_definition(manual_plan['baseline_spec'],'Baseline · previously submitted')
-            source_definition(manual_plan['challenged_spec'],'Challenge · pending approval')
-            with st.expander('How the proposed definitions are structured'):
-                st.json(manual_plan['baseline_spec'])
-                st.json(manual_plan['challenged_spec'])
-            if st.button('Run confirmed manual comparison',key='m2_manual_confirm'):
-                comparison=execute_comparison(df,baseline_spec,challenged_spec,
-                    expected_fingerprint=manual_plan['dataset_fingerprint_sha256'])
-                st.session_state['last_manual_comparison']={
-                    'plan':manual_plan,'result':comparison,'baseline_submission':manual_submission}
-        except AnalysisError as exc:
-            st.caption('Comparison not ready: '+str(exc))
-        stored_comparison=st.session_state.get('last_manual_comparison')
-        if stored_comparison and stored_comparison['plan'] != manual_plan:
-            st.info('Pending Challenge edits — the earlier confirmed comparison is hidden until these definitions are confirmed.')
-        if (stored_comparison and stored_comparison['baseline_submission']==manual_submission
-                and stored_comparison['plan']==manual_plan):
-            comparison_result(stored_comparison['result'],heading='User-confirmed Challenge',filename='manual_comparison.json')
+# M2 Challenge always binds to the specific submitted output, not controls.
+if (manual_current and saved_manual['output']['tool']=='grouped_summary'):
+    show_challenge_for_submitted_grouped(df,cols,saved_manual['output'],
+        {'kind':'manual','dataset':source_hash,'submission':saved_manual['submission'],
+         'label':'Manual calculation submitted with the settings above'},
+        prefix='manual',title='Challenge this submitted grouped finding',
+        button_label='Run confirmed manual comparison')
 
 
 st.divider()
@@ -185,29 +212,51 @@ with st.expander('Connection setup'):
             st.error(str(exc))
     st.caption('To change models, set GEMINI_MODEL in your .env file and rerun. No automatic model switching.')
 consent=st.checkbox('Use Gemini for this question: send the question, column names/types and analysis results (which may include matching rows).')
+# Existing results may be used as a follow-up baseline ONLY if the user
+# explicitly selects the exact submitted finding; never silently reuse one.
+current_baselines={}
+if (manual_current and saved_manual['output']['tool']=='grouped_summary'):
+    current_baselines['Submitted manual grouped calculation']={
+        'spec':saved_manual['output']['evidence']['executed_spec'],
+        'source':'manual','submission':saved_manual['submission']}
+prev_clarified=st.session_state.get('last_clarified')
+if (prev_clarified and prev_clarified['dataset_fingerprint']==source_hash
+        and prev_clarified['output']['tool']=='grouped_summary'):
+    current_baselines['Clarified: '+prev_clarified['submitted_question'][:90]]={
+        'spec':prev_clarified['output']['evidence']['executed_spec'],
+        'source':'clarified','question':prev_clarified['submitted_question'],
+        'chosen':prev_clarified['chosen']}
+prev_answer=st.session_state.get('last_answer')
+if (prev_answer and prev_answer.get('dataset_fingerprint')==source_hash
+        and prev_answer['response'].get('status')=='evidence_available'):
+    for i,event in enumerate(prev_answer['response'].get('trace',[]),1):
+        evidence=event.get('result',{}).get('evidence',{})
+        if evidence.get('calculation_status')=='completed' and evidence.get('executed_spec',{}).get('tool')=='grouped_summary':
+            current_baselines[f'Gemini calculation {i}: '+prev_answer['submitted_question'][:75]]={
+                'spec':evidence['executed_spec'],'source':'gemini',
+                'question':prev_answer['submitted_question'],'trace_index':i}
+baseline_set_id=hashlib.sha256(json.dumps(current_baselines,sort_keys=True,
+    ensure_ascii=False).encode()).hexdigest()[:16]
+baseline_label=st.selectbox('Follow-up Challenge baseline (optional)',
+    ['No prior baseline']+list(current_baselines),index=0,
+    key='ai_baseline_source_'+baseline_set_id)
+if baseline_label!='No prior baseline':
+    st.caption('Only this explicitly selected submitted grouped definition will be supplied to Gemini.')
 with st.form('question_form'):
     question=st.text_input('Question',max_chars=4000,placeholder='Which category has the highest total revenue?')
     submit=st.form_submit_button('Ask Gemini',disabled=not consent)
 if submit and consent:
+    # New question: do not preselect a business definition from an old clarification.
+    for key in ('clarify_method','clarify_group','clarify_metric','clarify_context'):
+        st.session_state.pop(key,None)
     st.session_state.pop('last_ai_comparison',None)
     st.session_state.pop('last_clarified',None)
     with st.spinner('Selecting tools and analysing…'):
         try:
-            previous=st.session_state.get('last_answer')
-            baseline_from_previous=None
-            if previous and previous.get('dataset_fingerprint')==source_hash:
-                for event in reversed(previous['response'].get('trace',[])):
-                    evidence=event.get('result',{}).get('evidence',{})
-                    if evidence.get('executed_spec',{}).get('tool')=='grouped_summary':
-                        baseline_from_previous=evidence['executed_spec']
-                        break
-            if baseline_from_previous is None:
-                previous_manual=st.session_state.get('last_manual')
-                if (previous_manual and previous_manual['submission']['fingerprint']==source_hash
-                        and previous_manual['output']['tool']=='grouped_summary'):
-                    baseline_from_previous=previous_manual['output']['evidence']['executed_spec']
-            answer=ask(df,question,baseline_spec=baseline_from_previous)
-            st.session_state['last_answer']={'dataset_fingerprint':source_hash,'submitted_question':question,'response':answer}
+            selected_baseline=current_baselines.get(baseline_label)
+            answer=ask(df,question,baseline_spec=(selected_baseline or {}).get('spec'))
+            st.session_state['last_answer']={'dataset_fingerprint':source_hash,'submitted_question':question,'response':answer,
+                'baseline_reference':selected_baseline}
         except AgentError as exc:
             st.session_state.pop('last_answer',None)
             st.error(str(exc))
@@ -224,100 +273,154 @@ if saved:
     if changed_question:
         st.warning('Pending question edits. This response belongs to the previous submitted question; send your new question to replace it.')
     status=answer.get('status','unverified')
-    if status=='clarification':
+    if status=='clarification' and not changed_question:
         st.info('Clarification needed — no analysis has run for this question.')
-        st.markdown('### Tell us what you want to compare')
+        st.markdown('### Clarify your original question')
         if answer.get('answer'):
-            st.caption('Model clarification request (not an executable definition): '+answer['answer'])
+            st.caption('Gemini asked (not an executable definition): '+answer['answer'])
         if missing_product_context(cols,submitted):
-            st.warning('Your question mentions “product”, but this CSV has no column containing “product”. You may choose an existing grouping column, or upload a dataset that has product data. Choosing another column changes the question.')
-        st.caption('Select an actual CSV column and what “best” means. Nothing is selected automatically.')
-        metric_options=metric_choices(cols,nums)
-        with st.form('clarify_definition'):
-            group=st.selectbox('Which column should be compared?',group_candidates(cols,submitted),
-                index=None,placeholder='Choose a column',key='clarify_group')
-            measure=st.selectbox('Which calculation should define “best”?',list(metric_options),
-                index=None,placeholder='Choose a calculation',key='clarify_metric')
-            clarify_submit=st.form_submit_button('Analyse with my choices',type='primary',disabled=changed_question)
-        if clarify_submit:
-            if not group or not measure:
-                st.error('Choose both a grouping column and a calculation before analysing.')
-            else:
-                chosen=metric_options[measure]
-                chosen_args={'group':group,'operation':chosen['operation']}
-                if chosen['metric'] is not None: chosen_args['metric']=chosen['metric']
-                try:
-                    output=run_tool(df,'grouped_summary',chosen_args)
-                    st.session_state['last_clarified']={
-                        'dataset_fingerprint':source_hash,'submitted_question':submitted,
-                        'chosen':chosen_args,'output':output}
-                except AnalysisError as exc:
-                    st.session_state.pop('last_clarified',None)
-                    st.error(str(exc))
-        clarified=st.session_state.get('last_clarified')
-        if (clarified and clarified['dataset_fingerprint']==source_hash
-                and clarified['submitted_question']==submitted and not changed_question):
-            if group is not None and measure is not None:
-                expected={'group':group,'operation':metric_options[measure]['operation']}
-                if metric_options[measure]['metric'] is not None:
-                    expected['metric']=metric_options[measure]['metric']
-                if clarified['chosen']==expected:
-                    analysis_result(clarified['output'],heading='Calculated using your chosen definition',question=submitted)
+            st.warning('Your question mentions “product”, but this CSV has no column containing “product”. You may choose an existing grouping column, or upload product-level data. Another column changes the question.')
+        st.caption('Choose the kind of clarification you want to provide. Nothing is selected automatically.')
+        method=st.radio('Clarification approach',
+            ['Choose a grouping and calculation','Explain the missing context (dates or other details)'],
+            index=None,key='clarify_method')
+        if method=='Choose a grouping and calculation':
+            options=metric_choices(cols,nums)
+            with st.form('clarify_definition'):
+                group=st.selectbox('Which column should be compared?',group_candidates(cols,submitted),
+                    index=None,placeholder='Choose a column',key='clarify_group')
+                measure=st.selectbox('Which calculation should define “best”?',list(options),
+                    index=None,placeholder='Choose a calculation',key='clarify_metric')
+                clarify_submit=st.form_submit_button('Analyse with my choices',type='primary')
+            if clarify_submit:
+                if not group or not measure:
+                    st.error('Choose both a grouping column and a calculation before analysing.')
                 else:
-                    st.warning('Clarification selections changed. Previous calculation hidden until you submit these choices.')
-            else:
-                st.warning('Clarification choices are now pending. Submit them to display an updated calculation.')
-    elif status=='comparison_pending':
-        st.warning('PENDING USER CONFIRMATION — no Challenge calculation has run.')
+                    selected=options[measure]
+                    definition={'group':group,'operation':selected['operation']}
+                    if selected['metric'] is not None:definition['metric']=selected['metric']
+                    try:
+                        output=run_tool(df,'grouped_summary',definition)
+                        st.session_state['last_clarified']={
+                            'dataset_fingerprint':source_hash,'submitted_question':submitted,
+                            'chosen':definition,'output':output}
+                    except AnalysisError as exc:
+                        st.session_state.pop('last_clarified',None);st.error(str(exc))
+            clarified=st.session_state.get('last_clarified')
+            if clarified and clarified['dataset_fingerprint']==source_hash and clarified['submitted_question']==submitted:
+                current_definition=None
+                if group is not None and measure is not None:
+                    selected=options[measure]
+                    current_definition={'group':group,'operation':selected['operation']}
+                    if selected['metric'] is not None:current_definition['metric']=selected['metric']
+                if current_definition==clarified['chosen']:
+                    analysis_result(clarified['output'],
+                        heading='Calculated from your explicit definition',question=submitted)
+                    if clarified['output']['tool']=='grouped_summary':
+                        show_challenge_for_submitted_grouped(df,cols,clarified['output'],
+                            {'kind':'clarified','dataset':source_hash,'question':submitted,
+                             'chosen':clarified['chosen'],
+                             'label':'Explicitly clarified answer to: '+submitted[:120]},
+                            prefix='clarified',title='Challenge this clarified grouped finding',
+                            button_label='Run confirmed clarified comparison')
+                else:
+                    st.warning('Pending clarification edits — the previous calculation and Challenge are hidden until you submit.')
+        elif method=='Explain the missing context (dates or other details)':
+            st.caption('For example: “Dates are DD/MM/YYYY” or “compare records by week”. Your explanation is context for Gemini, not executable code.')
+            with st.form('clarify_context_form'):
+                details=st.text_area('Your clarification',max_chars=2000,key='clarify_context')
+                contextual_submit=st.form_submit_button('Continue with original question and my clarification',type='primary')
+            if contextual_submit:
+                if not details.strip():
+                    st.error('Enter the missing information before continuing.')
+                elif not consent:
+                    st.error('Enable Gemini consent to send contextual clarification.')
+                else:
+                    try:
+                        with st.spinner('Reconsidering the original question with your clarification…'):
+                            new_response=ask(df,submitted,clarification_context=details)
+                        st.session_state.pop('last_clarified',None)
+                        st.session_state.pop('last_ai_comparison',None)
+                        st.session_state['last_answer']={'dataset_fingerprint':source_hash,
+                            'submitted_question':submitted,'response':new_response,
+                            'clarification_context':details,'baseline_reference':None}
+                        st.rerun()
+                    except AgentError as exc:
+                        st.error(str(exc))
+    elif status=='clarification' and changed_question:
+        st.info('The previous clarification is paused until you resubmit the edited question.')
+    elif status=='comparison_pending' and not changed_question:
+        proposal_for_status=answer.get('pending_comparison')
+        old_confirm=st.session_state.get('last_ai_comparison')
+        if (old_confirm and old_confirm.get('proposal')==proposal_for_status
+                and old_confirm.get('question')==submitted
+                and old_confirm.get('dataset_fingerprint')==source_hash
+                and old_confirm.get('result',{}).get('status')=='completed'):
+            st.caption('Gemini originally proposed the Challenge. The user-confirmed calculation is shown below.')
+        else:
+            st.warning('PENDING USER CONFIRMATION — the proposed Challenge has not been calculated.')
     elif status in ('error','limited','unverified'):
         st.error('Analysis not completed: '+str(answer.get('answer','No verified calculation available.')))
     else:
         st.caption('Python evidence is listed below. The model explanation remains unverified.')
 
-    for i,event in enumerate(answer.get('trace',[]),1):
+    for i,event in enumerate(answer.get('trace',[]) if not changed_question else [],1):
         result=event.get('result',{})
         if ('rows' in result and result.get('evidence',{}).get('calculation_status')=='completed'):
             analysis_result(result,heading=f'Calculation {i} · {event["tool"]}',model_tool=True,question=submitted)
         elif result.get('error'):
             st.error('Tool could not complete: '+str(result['error']))
-    if status=='evidence_available' and answer.get('answer'):
+    if not changed_question and status=='evidence_available' and answer.get('answer'):
         with st.expander('Gemini explanation · not independently verified'):
             st.write(answer['answer'])
-    proposal=answer.get('pending_comparison')
+    proposal=answer.get('pending_comparison') if not changed_question else None
     if proposal:
-        st.subheader('Proposed Challenge · not yet approved')
-        st.warning('These model-suggested definitions have not been calculated or approved.')
+        confirmed_before=st.session_state.get('last_ai_comparison')
+        ai_confirmed=bool(confirmed_before and confirmed_before.get('proposal')==proposal
+            and confirmed_before.get('question')==submitted
+            and confirmed_before.get('dataset_fingerprint')==source_hash
+            and confirmed_before.get('result',{}).get('status')=='completed')
+        st.subheader('Confirmed Challenge · originally proposed by Gemini' if ai_confirmed else 'Proposed Challenge · awaiting approval')
+        if ai_confirmed:
+            st.success('CONFIRMED — these exact definitions were approved and calculated.')
+        else:
+            st.warning('PENDING — these model-suggested definitions have not been calculated or approved.')
         changed=proposal['changed_condition']
         st.caption('Exactly one changed condition: '+changed['kind'])
         if changed.get('before'): st.caption('Before: '+filter_description(changed['before']))
         if changed.get('after'): st.caption('After: '+filter_description(changed['after']))
-        source_definition(proposal['baseline_spec'],'Baseline · proposed definition')
-        source_definition(proposal['challenged_spec'],'Challenge · proposed definition')
-        with st.expander('Inspect both exact specifications before confirmation'):
+        source_definition(proposal['baseline_spec'],
+                          'Baseline · confirmed definition' if ai_confirmed else 'Baseline · proposed definition')
+        source_definition(proposal['challenged_spec'],
+                          'Challenge · confirmed definition' if ai_confirmed else 'Challenge · proposed definition')
+        with st.expander('Inspect both exact specifications ('+('confirmed' if ai_confirmed else 'pending')+')'):
             st.json(proposal['baseline_spec'])
             st.json(proposal['challenged_spec'])
-        st.caption('Confirm only if BOTH definitions match the question you intended to ask.')
-        if st.button('Confirm and run proposed comparison',key='m2_ai_confirm',
-                     disabled=changed_question):
+        if not ai_confirmed:
+            st.caption('Confirm only if BOTH definitions match the question you intended to ask.')
+        if not ai_confirmed and st.button('Confirm and run proposed comparison',key='m2_ai_confirm'):
             try:
                 comparison=execute_comparison(df,proposal['baseline_spec'],proposal['challenged_spec'],
                     expected_fingerprint=proposal['dataset_fingerprint_sha256'])
                 st.session_state['last_ai_comparison']={
                     'proposal':proposal,'question':submitted,
                     'dataset_fingerprint':source_hash,'result':comparison}
+                st.rerun()
             except AnalysisError as exc:
                 st.error(str(exc))
         confirmed=st.session_state.get('last_ai_comparison')
-        if (confirmed and confirmed['proposal']==proposal and not changed_question
-                and confirmed['dataset_fingerprint']==source_hash
-                and confirmed['question']==submitted):
+        if ai_confirmed and confirmed:
             comparison_result(confirmed['result'],heading='User-confirmed comparison',filename='confirmed_comparison.json')
     with st.expander('How this response was produced'):
         st.caption('Original question, model status and tool trace. Tool results do not prove a model interpretation is correct.')
-        st.json({'question':submitted,'status':status,'model':answer.get('model',model),
+        st.json({'question':submitted,'model_proposal_status_at_creation' if status=='comparison_pending' else 'model_status':status,
+                 'model':answer.get('model',model),
                  'trace':answer.get('trace',[]),'calculation_verified':answer.get('calculation_verified',False),
-                 'explanation_verified':answer.get('explanation_verified',False)})
-    evidence_download(answer,'ai_analysis.json','Download AI analysis evidence')
+                 'explanation_verified':answer.get('explanation_verified',False),
+                 'user_clarification_context':saved.get('clarification_context'),
+                 'explicit_baseline_reference':saved.get('baseline_reference')})
+    evidence_download(answer,'ai_analysis.json',
+        'Download original Gemini proposal JSON' if status=='comparison_pending' else 'Download AI analysis evidence')
 
 st.divider()
 st.caption('Saved Findings · planned for a later milestone. Nothing is stored or revisited in this version.')

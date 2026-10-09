@@ -59,7 +59,7 @@ class AppTests(unittest.TestCase):
         self.assertFalse(at.exception)
         self.assertEqual(at.session_state['last_manual']['output']['rows'][0]['value'],3000)
         self.assertTrue(any('previous result is hidden' in str(c.value).lower()
-                            for c in at.get('caption')))
+                            for c in at.warning))
 
     def test_upload_empty_state(self):
         at=_launch()
@@ -138,12 +138,15 @@ class M2ChallengeAppTests(unittest.TestCase):
         self.assertFalse(at.exception)
         result=at.session_state['last_manual_comparison']['result']
         self.assertEqual(result['status'],'completed')
+        self.assertFalse(any('not calculated or approved' in str(w.value).lower() for w in at.warning))
+        self.assertTrue(any('confirmed' in str(x.value).lower() for x in at.success))
         self.assertEqual(result['accounting']['baseline']['selected_rows'],4)
         self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
         self.widget(at,'text_input','Challenged filter value').input('Snacks').run()
         self.assertFalse(at.exception)
         self.assertIn('last_manual_comparison',at.session_state)
-        self.assertFalse(any('Download manual comparison JSON'==b.label for b in at.button))
+        self.assertFalse(any('Download comparison JSON'==b.label for b in at.button))
+        self.assertTrue(any('pending' in str(w.value).lower() for w in at.warning))
 
     def test_ai_comparison_pending_then_user_confirmed(self):
         from comparisons import prepare_comparison
@@ -168,9 +171,11 @@ class M2ChallengeAppTests(unittest.TestCase):
             result=at.session_state['last_ai_comparison']['result']
             self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
             self.assertEqual(result['status'],'completed')
+            self.assertFalse(any('not calculated' in str(x.value).lower() for x in at.warning))
+            self.assertTrue(any('confirmed' in str(x.value).lower() for x in at.success))
             self.widget(at,'text_input','Question').input('Some other question').run()
             self.assertFalse(at.exception)
-            self.assertTrue(self.widget(at,'button','Confirm and run proposed comparison').disabled)
+            self.assertFalse(any(b.label=='Confirm and run proposed comparison' for b in at.button))
 
 class P1P3UiAppTests(unittest.TestCase):
     """Requires Streamlit + pinned google-genai; never makes live provider calls."""
@@ -197,6 +202,8 @@ class P1P3UiAppTests(unittest.TestCase):
             self.assertNotIn('last_clarified',at.session_state)
             self.assertTrue(any('no column containing' in str(w.value).lower() for w in at.warning))
             # No implicit selections and no analysis before explicitly submitting.
+            self.assertIsNone(self.field(at,'radio','Clarification approach').value)
+            self.field(at,'radio','Clarification approach').set_value('Choose a grouping and calculation').run()
             self.assertIsNone(self.field(at,'selectbox','Which column should be compared?').value)
             self.assertIsNone(self.field(at,'selectbox','Which calculation should define “best”?').value)
             self.field(at,'selectbox','Which column should be compared?').select('category').run()
@@ -216,6 +223,7 @@ class P1P3UiAppTests(unittest.TestCase):
     def test_clarification_explicit_count_rows_not_orders(self):
         with patch('agent.ask',return_value=self.mocked_answer()):
             at=self.submit_question(_launch(),'Which category has the most sales?')
+            self.field(at,'radio','Clarification approach').set_value('Choose a grouping and calculation').run()
             self.field(at,'selectbox','Which column should be compared?').select('category').run()
             self.field(at,'selectbox','Which calculation should define “best”?').select('Record count (rows)').run()
             self.field(at,'button','Analyse with my choices').click().run()
@@ -228,6 +236,79 @@ class P1P3UiAppTests(unittest.TestCase):
             at=self.submit_question(_launch(),'What is the top category?')
             self.assertFalse(at.exception)
             self.assertTrue(any('Quota unavailable.' in str(e.value) for e in at.error))
+
+    def test_streamlit_result_table_uses_exact_large_integer_evidence(self):
+        raw=b'g,amount\n'+b'A,999999999999999\n'*11+b'B,\n'
+        df=load_csv(raw)
+        output=run_tool(df,'grouped_summary',{'group':'g','metric':'amount','operation':'sum'})
+        response={'status':'evidence_available','answer':'Model narration not verified',
+            'trace':[{'tool':'grouped_summary','arguments':{'group':'g',
+                     'metric':'amount','operation':'sum'},'result':output}],
+            'calculation_verified':True,'explanation_verified':False}
+        with patch('agent.ask',return_value=response):
+            at=self.submit_question(_launch(),'Which group has greatest total amount?')
+            self.assertFalse(at.exception)
+            self.assertGreaterEqual(len(at.dataframe),2)
+            rendered=at.dataframe[-1].value
+            self.assertEqual(rendered.iloc[0]['value'],'10,999,999,999,999,989')
+            self.assertEqual(rendered.iloc[1]['value'],'No numeric value')
+            self.assertEqual(output['rows'][0]['value'],10999999999999989)
+            self.assertIsNone(output['rows'][1]['value'])
+
+    def test_contextual_clarification_preserves_question_and_does_not_execute_without_submit(self):
+        first=self.mocked_answer('clarification','Which date format: DD/MM/YYYY or MM/DD/YYYY?')
+        second=self.mocked_answer('clarification','Which time interval?')
+        with patch('agent.ask',side_effect=[first,second]) as send:
+            at=self.submit_question(_launch(),'How did sales change on 01/02/2026?')
+            self.field(at,'radio','Clarification approach').set_value('Explain the missing context (dates or other details)').run()
+            self.assertEqual(send.call_count,1)
+            self.field(at,'text_area','Your clarification').input('Dates are DD/MM/YYYY').run()
+            self.assertEqual(send.call_count,1)
+            self.field(at,'button','Continue with original question and my clarification').click().run()
+            self.assertFalse(at.exception)
+            self.assertEqual(send.call_count,2)
+            self.assertEqual(send.call_args.args[1],'How did sales change on 01/02/2026?')
+            self.assertEqual(send.call_args.kwargs['clarification_context'],'Dates are DD/MM/YYYY')
+            self.assertEqual(at.session_state['last_answer']['submitted_question'],
+                             'How did sales change on 01/02/2026?')
+            self.assertNotIn('last_clarified',at.session_state)
+
+    def test_clarified_grouped_answer_can_be_challenged_without_manual_baseline(self):
+        with patch('agent.ask',return_value=self.mocked_answer()):
+            at=self.submit_question(_launch(),'Which is the best-selling product?')
+            self.field(at,'radio','Clarification approach').set_value('Choose a grouping and calculation').run()
+            self.field(at,'selectbox','Which column should be compared?').select('category').run()
+            self.field(at,'selectbox','Which calculation should define “best”?').select('Total of “units”').run()
+            self.field(at,'button','Analyse with my choices').click().run()
+            self.assertNotIn('last_manual',at.session_state)
+            self.field(at,'selectbox','Challenged filter column').select('region').run()
+            self.field(at,'text_input','Challenged filter value').input('North').run()
+            self.field(at,'button','Run confirmed clarified comparison').click().run()
+            self.assertFalse(at.exception)
+            entry=at.session_state['last_clarified_comparison']
+            self.assertEqual(entry['baseline_binding']['kind'],'clarified')
+            self.assertEqual(entry['result']['baseline_spec']['arguments']['metric'],'units')
+            self.assertEqual(entry['result']['status'],'completed')
+            self.field(at,'text_input','Challenged filter value').input('South').run()
+            self.assertFalse(at.exception)
+            self.assertFalse(any('Download comparison JSON'==b.label for b in at.button))
+            self.assertTrue(any('pending' in str(x.value).lower() for x in at.warning))
+
+    def test_followup_baseline_must_be_explicit(self):
+        from engine import load_csv,run_tool
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        tool_out=run_tool(df,'grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+        sample={'status':'evidence_available','answer':'Unverified text',
+                'trace':[{'tool':'grouped_summary','arguments':{},'result':tool_out}],
+                'calculation_verified':True,'explanation_verified':False}
+        with patch('agent.ask',return_value=sample) as send:
+            at=_launch()
+            self.field(at,'selectbox','Analysis tool').select('Summarise groups').run()
+            self.field(at,'button','Run analysis').click().run()
+            self.field(at,'checkbox','Use Gemini for this question: send the question, column names/types and analysis results (which may include matching rows).').check().run()
+            self.field(at,'text_input','Question').input('A different unrelated question').run()
+            self.field(at,'button','Ask Gemini').click().run()
+            self.assertIsNone(send.call_args.kwargs['baseline_spec'])
 
     def test_saved_findings_are_planned_only(self):
         at=_launch()

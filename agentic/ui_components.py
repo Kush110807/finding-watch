@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import streamlit as st
 from presentation import (summary, comparison_summary, comparison_table, label, number,
-                          metric_definition, spec_description, filter_description,chart_safe)
+                          metric_definition, spec_description, filter_description,chart_safe,display_rows)
 
 
 def evidence_download(data,filename,caption='Download complete, unmodified calculation evidence'):
@@ -59,17 +59,12 @@ def analysis_result(output, *, heading='Calculated result', model_tool=False, qu
     accounting(ev)
     rows=output.get('rows',[])
     if rows:
-        table=pd.DataFrame(rows)
-        if 'group_value' in table:
-            table['group_value']=table['group_value'].map(label)
-        if 'value' in table and any(v is None for v in table['value']):
-            table['value']=table['value'].map(lambda v: 'No numeric value' if v is None else v)
-        # Table renderers may coerce integers >2**53 to imprecise JS floats.
-        for col in table:
-            if any(type(v) is int and abs(v)>2**53 for v in table[col]):
-                table[col]=table[col].map(lambda v: number(v) if v is not None else None)
-                st.caption(f'Exact large integers in “{col}” are displayed as text to avoid rounding.')
+        # Format exact Python int/null evidence BEFORE constructing pandas.
+        # A pandas frame with [very_large_int, None] would otherwise coerce
+        # the integer to an imprecise float before an after-the-fact fix.
+        table=pd.DataFrame(display_rows(rows),dtype=str)
         st.dataframe(table,hide_index=True,use_container_width=True)
+        st.caption('Table values are formatted from exact evidence before display; the JSON download preserves original numeric types and missing values.')
     if output['tool'] in ('grouped_summary','time_trend'):
         if chart_safe(rows[:30]) and len(rows)>=2:
             field='group_value' if output['tool']=='grouped_summary' else 'period_start'
