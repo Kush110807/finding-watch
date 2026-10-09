@@ -1,0 +1,64 @@
+{
+  "dataset_fingerprint_sha256": "f1145e7923d6a10909f5afba6766ea528c0a31923c6ab9fa8fedd75e84a1fe95",
+  "executed_spec": {
+    "spec_version": 1,
+    "tool": "grouped_summary",
+    "arguments": {
+      "group": "category",
+      "metric": "revenue",
+      "operation": "sum"
+    },
+    "filters": [
+      {
+        "field": "status",
+        "operator": "eq",
+        "value": "completed"
+      }
+    ],
+    "display_limit": 100
+  },
+  "accounting": {
+    "input_rows": 4,
+    "selected_rows": 3,
+    "excluded_by_filters": 1,
+    "filters_sequential": [
+      {
+        "field": "status",
+        "operator": "eq",
+        "value": "completed",
+        "eligible_before": 4,
+        "eligible_after": 3,
+        "newly_excluded": 1
+      }
+    ],
+    "operation_exclusions": {
+      "missing_group_labels_excluded": 0,
+      "missing_group_labels_included": 0,
+      "missing_metric_excluded_from_values": 0
+    }
+  },
+  "display": {
+    "limit": 100,
+    "total_result_rows": 2,
+    "returned_rows": 2,
+    "truncated": false
+  },
+  "warnings": [
+    "Multiple groups tie for highest value; result order is not a unique rank."
+  ],
+  "results": [
+    {
+      "group_value": "Coffee",
+      "value": 30,
+      "row_count": 2,
+      "non_missing_metric_count": 2
+    },
+    {
+      "group_value": "Snacks",
+      "value": 30,
+      "row_count": 1,
+      "non_missing_metric_count": 1
+    }
+  ],
+  "calculation_status": "completed"
+}

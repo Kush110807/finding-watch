@@ -9,3 +9,4 @@ __pycache__/
 *.sqlite*
 uploads/
 *.bundle
+live_verification*.json

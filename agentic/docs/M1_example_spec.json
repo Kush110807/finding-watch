@@ -1,0 +1,17 @@
+{
+  "spec_version": 1,
+  "tool": "grouped_summary",
+  "arguments": {
+    "group": "category",
+    "metric": "revenue",
+    "operation": "sum"
+  },
+  "filters": [
+    {
+      "field": "status",
+      "operator": "eq",
+      "value": "completed"
+    }
+  ],
+  "display_limit": 100
+}

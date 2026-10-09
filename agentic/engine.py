@@ -1,169 +1,227 @@
-"""Deterministic, read-only analysis tools. No model or code execution."""
+"""Deterministic read-only analysis; only validated specifications are executed."""
 import csv
 import io
 import math
 import json
 import hashlib
+import re
 import pandas as pd
 from pandas.api.types import is_numeric_dtype, is_bool_dtype
+from specs import AnalysisSpec, SpecError
 
 MAX_BYTES = 10 * 1024 * 1024
 MAX_ROWS = 100_000
 MAX_COLUMNS = 100
+NUMERIC_TEXT = re.compile(r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$')
+LEADING_ZERO = re.compile(r'^[+-]?0\d+(?:\.\d*)?(?:[eE][+-]?\d+)?$')
+IDENTIFIER_NAME = re.compile(r'(?:^id$|(?:^|[_\s-])id$|identifier|postal|post.?code|pin.?code|zip|phone|mobile|account|sku|serial|reference|^code$|[_\s-]code$|date|time)',re.I)
 
 class AnalysisError(ValueError):
-    """An input problem safe to show to the user."""
+    """Input error safe to show to user."""
+
 
 def load_csv(raw: bytes) -> pd.DataFrame:
-    if not raw or len(raw) > MAX_BYTES:
+    if not raw or len(raw)>MAX_BYTES:
         raise AnalysisError('Upload a non-empty CSV no larger than 10 MiB.')
     try:
-        text = raw.decode('utf-8-sig')
+        text=raw.decode('utf-8-sig')
     except UnicodeDecodeError:
         raise AnalysisError('Save the CSV with UTF-8 encoding.') from None
     if '\x00' in text:
         raise AnalysisError('The file contains null bytes; upload a text CSV.')
     try:
-        reader = csv.reader(io.StringIO(text, newline=''), strict=True)
-        header = next(reader, [])
-        if not header or len(header) > MAX_COLUMNS:
+        reader=csv.reader(io.StringIO(text,newline=''),strict=True)
+        header=next(reader,[])
+        if not header or len(header)>MAX_COLUMNS:
             raise AnalysisError('CSV must have a header with 1–100 columns.')
-        if any(not h.strip() for h in header) or len(set(h.strip() for h in header)) != len(header):
+        if any(not h.strip() for h in header) or len({h.strip() for h in header})!=len(header):
             raise AnalysisError('Column names must be non-empty and unique after trimming spaces.')
-        count = 0
+        count=0
         for row in reader:
-            if not row:  # Match pandas blank-line handling.
+            if not row:
                 continue
-            if len(row) != len(header):
-                raise AnalysisError(f'Record {count + 2} has {len(row)} fields; expected {len(header)}.')
-            count += 1
-            if count > MAX_ROWS:
+            if len(row)!=len(header):
+                raise AnalysisError(f'Record {count+2} has {len(row)} fields; expected {len(header)}.')
+            count+=1
+            if count>MAX_ROWS:
                 raise AnalysisError('CSV exceeds 100,000 data rows.')
-        if count == 0:
+        if not count:
             raise AnalysisError('CSV has a header but no data rows.')
-        # Only empty fields are missing. Preserve labels such as NA and NULL.
-        df = pd.read_csv(io.StringIO(text), keep_default_na=False, na_values=[''])
-        df.columns = [h.strip() for h in header]
+        # Initially read EVERYTHING as exact text to avoid losing leading zeroes
+        # and to keep ambiguous identifiers out of numeric calculations.
+        df=pd.read_csv(io.StringIO(text),dtype='string',keep_default_na=False,na_values=[''])
+        df.columns=[h.strip() for h in header]
+        kept=[]
+        for name in df:
+            values=df[name].dropna()
+            if IDENTIFIER_NAME.search(name) or values.empty:
+                kept.append(name)
+                continue
+            if not values.map(lambda v: bool(NUMERIC_TEXT.fullmatch(v)) and not bool(LEADING_ZERO.fullmatch(v))).all():
+                kept.append(name)
+                continue
+            # Preserve potentially identifying big integral codes and avoid float rounding.
+            if values.map(lambda v: bool(re.fullmatch(r'[+-]?\d{16,}',v))).any():
+                kept.append(name)
+                continue
+            try:
+                numeric_values=pd.to_numeric(df[name],errors='raise')
+                if not numeric_values.dropna().map(lambda v: math.isfinite(float(v))).all():
+                    kept.append(name)
+                    continue
+                df[name]=numeric_values
+            except (ValueError,TypeError,OverflowError):
+                kept.append(name)
+        df.attrs['source_sha256']=hashlib.sha256(raw).hexdigest()
+        df.attrs['text_columns']=kept
+        df.attrs['parsing_policy']='Conservative: identifier-like names, leading-zero values, dates and mixed text stay text; other all-finite numeric columns parsed.'
         return df
-    except (csv.Error, pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+    except (csv.Error,pd.errors.ParserError,pd.errors.EmptyDataError) as exc:
         raise AnalysisError('Malformed CSV. Check delimiters and quotation marks.') from exc
+
+
+def dataset_fingerprint(df):
+    if 'source_sha256' in df.attrs:
+        return df.attrs['source_sha256']
+    # Fallback for caller-generated DataFrames; source CSVs use the raw-byte hash.
+    body={'columns':[str(c) for c in df.columns],
+          'types':[str(df[c].dtype) for c in df],
+          'data':df.to_json(orient='split',date_format='iso',double_precision=15)}
+    return hashlib.sha256(json.dumps(body,sort_keys=True).encode()).hexdigest()
+
 
 def numeric_columns(df):
     return [c for c in df if is_numeric_dtype(df[c]) and not is_bool_dtype(df[c])]
 
-def column(df, name):
+
+def column(df,name):
     if name not in df.columns:
         raise AnalysisError(f'Unknown column: {name}')
     return df[name]
 
-def numeric(df, name):
-    s = column(df, name)
+
+def numeric(df,name):
+    s=column(df,name)
     if name not in numeric_columns(df):
-        raise AnalysisError(f'{name} must be numeric; clean mixed text or currency symbols first.')
+        raise AnalysisError(f'{name} is text/ambiguous, not a validated numeric metric. Preserve identifiers; clean or explicitly convert a copy before upload.')
     if any(not math.isfinite(float(v)) for v in s.dropna()):
-        raise AnalysisError(f'{name} contains infinite values; clean these before analysis.')
+        raise AnalysisError(f'{name} contains non-finite values; clean these before analysis.')
     return s
 
-def result(tool, frame, **metadata):
-    # JSON-safe boundary for future model integration; reject non-finite output.
+
+def result(tool,frame,**metadata):
     for c in frame.select_dtypes(include='number'):
         if any(not math.isfinite(float(v)) for v in frame[c].dropna()):
-            raise AnalysisError('Calculation overflowed. Rescale the numeric values.')
-    return {'tool': tool, 'metadata': metadata,
-            'rows': json.loads(frame.to_json(orient='records', date_format='iso', double_precision=15))}
+            raise AnalysisError('Calculation overflowed. Rescale numeric values.')
+    return {'tool':tool,'metadata':metadata,
+            'rows':json.loads(frame.to_json(orient='records',date_format='iso',double_precision=15))}
+
 
 def inspect_dataset(df):
-    table = pd.DataFrame([{'column': c, 'dtype': str(df[c].dtype),
-        'missing': int(df[c].isna().sum()), 'unique_non_missing': int(df[c].nunique())} for c in df])
-    return result('inspect_dataset', table, total_rows=len(df), total_columns=len(df.columns),
-                  duplicate_rows=int(df.duplicated().sum()), missing_policy='Only empty CSV fields are missing.')
+    table=pd.DataFrame([{'column':c,'dtype':str(df[c].dtype),
+        'missing':int(df[c].isna().sum()),'unique_non_missing':int(df[c].nunique())} for c in df])
+    return result('inspect_dataset',table,total_rows=len(df),total_columns=len(df.columns),
+                  duplicate_rows=int(df.duplicated().sum()),
+                  missing_policy='Only empty CSV fields are missing.')
 
-def filter_rows(df, field, operator, value=None, limit=100):
-    s = column(df, field)
-    if type(limit) is not int or not 1 <= limit <= 1000:
-        raise AnalysisError('Display limit must be an integer between 1 and 1000.')
-    if operator == 'is_missing':
-        mask = s.isna()
-    elif operator == 'not_missing':
-        mask = s.notna()
-    elif operator == 'contains':
-        mask = s.astype('string').str.contains(str(value), regex=False, na=False)
-    elif operator in {'eq','ne','gt','ge','lt','le'}:
-        if field in numeric_columns(df):
-            numeric(df, field)
-            try:
-                value = float(value)
-                if not math.isfinite(value):
-                    raise ValueError()
-            except (ValueError, TypeError):
-                raise AnalysisError('Enter a finite numeric filter value.') from None
-        elif is_bool_dtype(s):
-            if str(value).lower() not in {'true','false'}:
-                raise AnalysisError('Boolean filter value must be true or false.')
-            value = str(value).lower() == 'true'
-        elif operator not in {'eq','ne'}:
-            raise AnalysisError('Ordered comparisons require a numeric column.')
-        else:
-            value = str(value)
-        mask = getattr(s, operator)(value) & s.notna()
-    else:
+
+def _condition(df,field,operator,value=None):
+    s=column(df,field)
+    if operator=='is_missing':
+        return s.isna(),None
+    if operator=='not_missing':
+        return s.notna(),None
+    if operator=='contains':
+        if value is None:
+            raise AnalysisError('Contains filter requires a text value.')
+        return s.astype('string').str.contains(str(value),regex=False,na=False).fillna(False),value
+    if operator not in {'eq','ne','gt','ge','lt','le'}:
         raise AnalysisError('Unknown filter operator.')
-    selected = df.loc[mask]
-    return result('filter_rows', selected.head(limit), matched_rows=len(selected),
-                  returned_rows=min(limit,len(selected)), truncated=len(selected)>limit,
-                  field=field, operator=operator, value=value)
+    if field in numeric_columns(df):
+        numeric(df,field)
+        try:
+            if type(value) is bool:
+                raise ValueError
+            value=float(value)
+            if not math.isfinite(value):
+                raise ValueError
+        except (TypeError,ValueError,OverflowError):
+            raise AnalysisError('Enter a finite numeric filter value.') from None
+    elif is_bool_dtype(s):
+        if str(value).lower() not in {'true','false'}:
+            raise AnalysisError('Boolean filter value must be true or false.')
+        value=str(value).lower()=='true'
+    elif operator not in {'eq','ne'}:
+        raise AnalysisError('Ordered comparisons require an unambiguous numeric column.')
+    else:
+        value=str(value)
+    return (getattr(s,operator)(value) & s.notna()).fillna(False),value
 
-def grouped_summary(df, group, metric=None, operation='sum'):
-    column(df, group)
+
+def filter_rows(df,field,operator,value=None,limit=100):
+    if type(limit) is not int or not 1<=limit<=1000:
+        raise AnalysisError('Display limit must be an integer between 1 and 1000.')
+    mask,normalized=_condition(df,field,operator,value)
+    selected=df.loc[mask]
+    out=result('filter_rows',selected.head(limit),matched_rows=len(selected),
+               returned_rows=min(limit,len(selected)),truncated=len(selected)>limit,
+               field=field,operator=operator,value=normalized)
+    return out
+
+
+def grouped_summary(df,group,metric=None,operation='sum'):
+    column(df,group)
     if operation not in {'sum','mean','min','max','count_rows'}:
         raise AnalysisError('Unsupported aggregation.')
-    if df[group].nunique(dropna=False) > 1000:
+    if df[group].nunique(dropna=False)>1000:
         raise AnalysisError('Choose a grouping column with at most 1,000 distinct values.')
-    gb = df.groupby(group, dropna=False, sort=False)
-    if operation == 'count_rows':
-        values = gb.size()
-    else:
-        numeric(df, metric)
-        values = gb[metric].sum(min_count=1) if operation=='sum' else getattr(gb[metric],operation)()
-    out = pd.DataFrame({'group_value':values.index, 'value':values.values})
-    out['row_count'] = gb.size().values
-    if operation != 'count_rows':
-        out['non_missing_metric_count'] = gb[metric].count().values
-    out = out.sort_values('value',ascending=False,na_position='last',kind='stable')
+    if operation!='count_rows':
+        numeric(df,metric)
+    if df.empty:
+        raise AnalysisError('No selected rows match the filters.')
+    gb=df.groupby(group,dropna=False,sort=False)
+    values=gb.size() if operation=='count_rows' else (gb[metric].sum(min_count=1) if operation=='sum' else getattr(gb[metric],operation)())
+    out=pd.DataFrame({'group_value':values.index,'value':values.values})
+    out['row_count']=gb.size().values
+    if operation!='count_rows':
+        out['non_missing_metric_count']=gb[metric].count().values
+    out=out.sort_values('value',ascending=False,na_position='last',kind='stable')
     return result('grouped_summary',out,group_column=group,metric=metric,operation=operation,
-                  policy='Missing groups included; missing metric values excluded; all-missing sums remain null.')
+                  policy='Missing group labels retained as null; missing metrics excluded; all-missing sums remain null.')
 
-def time_trend(df, date_column, metric, frequency='month', date_format='%Y-%m-%d', operation='sum'):
-    formats={'%Y-%m-%d','%d/%m/%Y','%m/%d/%Y'}
-    if date_format not in formats or frequency not in {'day','week','month'}:
-        raise AnalysisError('Select a supported date format and frequency.')
+
+def time_trend(df,date_column,metric=None,frequency='month',date_format='%Y-%m-%d',operation='sum'):
+    if date_format not in {'%Y-%m-%d','%d/%m/%Y','%m/%d/%Y'} or frequency not in {'day','week','month'}:
+        raise AnalysisError('Select an explicit supported date format and frequency.')
     if operation not in {'sum','mean','count_rows'}:
         raise AnalysisError('Unsupported time aggregation.')
-    s = column(df,date_column)
-    dates = pd.to_datetime(s.astype('string'),format=date_format,errors='coerce',exact=True)
-    invalid = int((s.notna() & dates.isna()).sum())
+    s=column(df,date_column)
+    dates=pd.to_datetime(s.astype('string'),format=date_format,errors='coerce',exact=True)
+    invalid=int((s.notna()&dates.isna()).sum())
     if invalid:
         raise AnalysisError(f'{invalid} non-empty dates do not match {date_format}. Correct the format or data.')
     if not dates.notna().any():
         raise AnalysisError('No valid dates to analyse.')
-    tmp = pd.DataFrame({'period':dates.dt.to_period({'day':'D','week':'W-SUN','month':'M'}[frequency]).dt.start_time})
+    tmp=pd.DataFrame({'period':dates.dt.to_period({'day':'D','week':'W-SUN','month':'M'}[frequency]).dt.start_time},index=df.index)
     if operation!='count_rows':
-        tmp['metric'] = numeric(df,metric)
-    gb = tmp.dropna(subset=['period']).groupby('period',sort=True)
-    vals = gb.size() if operation=='count_rows' else (gb.metric.sum(min_count=1) if operation=='sum' else gb.metric.mean())
+        tmp['metric']=numeric(df,metric)
+    gb=tmp.dropna(subset=['period']).groupby('period',sort=True)
+    vals=gb.size() if operation=='count_rows' else (gb.metric.sum(min_count=1) if operation=='sum' else gb.metric.mean())
     if len(vals)>1000:
         raise AnalysisError('More than 1,000 time buckets; choose a coarser frequency.')
-    out = pd.DataFrame({'period_start':vals.index.strftime('%Y-%m-%d'),'value':vals.values,'row_count':gb.size().values})
+    out=pd.DataFrame({'period_start':vals.index.strftime('%Y-%m-%d'),'value':vals.values,'row_count':gb.size().values})
     if operation!='count_rows':
-        out['non_missing_metric_count'] = gb.metric.count().values
+        out['non_missing_metric_count']=gb.metric.count().values
     return result('time_trend',out,date_column=date_column,metric=metric,operation=operation,
                   excluded_missing_dates=int(dates.isna().sum()),frequency=frequency,
-                  policy='Weeks start Monday. Unobserved periods omitted, not assumed zero.')
+                  date_format=date_format,
+                  policy='Weeks start Monday; unobserved periods omitted, not assumed zero.')
 
-def correlation(df, x, y):
+
+def correlation(df,x,y):
     if x==y:
         raise AnalysisError('Choose two different numeric columns.')
-    pair = pd.DataFrame({'x':numeric(df,x),'y':numeric(df,y)}).dropna()
+    pair=pd.DataFrame({'x':numeric(df,x),'y':numeric(df,y)}).dropna()
     if len(pair)<3:
         raise AnalysisError('At least three complete pairs are required.')
     if pair.x.nunique()<2 or pair.y.nunique()<2:
@@ -173,15 +231,121 @@ def correlation(df, x, y):
         raise AnalysisError('Correlation could not be calculated; check numeric scale.')
     return result('correlation',pd.DataFrame([{'x':x,'y':y,'pearson_r':r}]),
                   complete_pairs=len(pair),excluded_rows=len(df)-len(pair),
-                  caveat='Association is not causation. Small samples may be unstable.')
+                  caveat='Association is not causation; small samples may be unstable.')
 
-TOOLS = {f.__name__:f for f in [inspect_dataset,filter_rows,grouped_summary,time_trend,correlation]}
-def run_tool(df, name, arguments):
+TOOLS={f.__name__:f for f in (inspect_dataset,filter_rows,grouped_summary,time_trend,correlation)}
+
+
+def execute_spec(df,raw_spec):
+    """Run validated filters on the FULL dataframe; only display is truncated."""
+    try:
+        spec=AnalysisSpec.parse(raw_spec)
+    except SpecError as exc:
+        raise AnalysisError(str(exc)) from None
+    definition=spec.as_dict()
+    selected=df
+    applied=[]
+    # Sequential exclusion numbers are DISJOINT by construction; repeated or
+    # overlapping predicates never double-count the same removed row.
+    for cond in definition['filters']:
+        before=len(selected)
+        mask,normalized=_condition(selected,cond['field'],cond['operator'],cond.get('value'))
+        selected=selected.loc[mask]
+        applied.append({'field':cond['field'],'operator':cond['operator'],
+                        **({'value':normalized} if 'value' in cond else {}),
+                        'eligible_before':before,'eligible_after':len(selected),
+                        'newly_excluded':before-len(selected)})
+    n=len(selected)
+    if n==0:
+        raise AnalysisError('No rows match the filters; no analytical result was produced.')
+    tool=spec.tool
+    arguments=definition['arguments']
+    warnings=[]
+    accounting={'input_rows':len(df),'selected_rows':n,
+                'excluded_by_filters':len(df)-n,'filters_sequential':applied,
+                'operation_exclusions':{}}
+    if tool=='filter_rows':
+        payload=result('filter_rows',selected.head(spec.display_limit),matched_rows=n,
+                       returned_rows=min(n,spec.display_limit),truncated=n>spec.display_limit)
+    else:
+        payload=TOOLS[tool](selected,**arguments)
+    if tool=='grouped_summary':
+        group=arguments['group']
+        missing_groups=int(selected[group].isna().sum())
+        exclusions=accounting['operation_exclusions']
+        exclusions['missing_group_labels_excluded']=0
+        exclusions['missing_group_labels_included']=missing_groups
+        if missing_groups:
+            warnings.append(f'{missing_groups} row(s) have a missing group label; grouped under null.')
+        if arguments['operation']!='count_rows':
+            missing=int(selected[arguments['metric']].isna().sum())
+            exclusions['missing_metric_excluded_from_values']=missing
+            if missing:
+                warnings.append(f'{missing} row(s) have missing metric values; excluded from numeric calculations, not from group row counts.')
+        vals=[row['value'] for row in payload['rows'] if row.get('value') is not None]
+        if vals and vals.count(max(vals))>1:
+            warnings.append('Multiple groups tie for highest value; result order is not a unique rank.')
+    elif tool=='time_trend':
+        date=arguments['date_column']
+        dates=pd.to_datetime(selected[date].astype('string'),format=arguments['date_format'],errors='coerce',exact=True)
+        missing_date=dates.isna()
+        exclusions=accounting['operation_exclusions']
+        exclusions['missing_date_excluded']=int(missing_date.sum())
+        if arguments['operation']!='count_rows':
+            miss_metric=selected[arguments['metric']].isna()
+            exclusions['missing_metric_and_date_overlap']=int((miss_metric & missing_date).sum())
+            exclusions['missing_metric_with_valid_date_excluded_from_values']=int((miss_metric & ~missing_date).sum())
+            exclusions['excluded_from_numeric_values_union']=int((miss_metric|missing_date).sum())
+        if missing_date.any():
+            warnings.append(f'{int(missing_date.sum())} missing date(s) excluded from period counts.')
+    elif tool=='correlation':
+        xmiss=selected[arguments['x']].isna()
+        ymiss=selected[arguments['y']].isna()
+        exclusions=accounting['operation_exclusions']
+        exclusions.update({'missing_x_only':int((xmiss & ~ymiss).sum()),
+                           'missing_y_only':int((ymiss & ~xmiss).sum()),
+                           'missing_both':int((xmiss&ymiss).sum()),
+                           'excluded_incomplete_pairs_union':int((xmiss|ymiss).sum()),
+                           'complete_pairs':int((~xmiss&~ymiss).sum())})
+        warnings.append('Pearson correlation is not evidence of causation.')
+    elif tool=='inspect_dataset':
+        warnings.append('Dataset profile reflects selected rows only; columns and types remain unchanged.') if definition['filters'] else None
+    total_result_rows=n if tool=='filter_rows' else len(payload['rows'])
+    if total_result_rows>spec.display_limit:
+        payload['rows']=payload['rows'][:spec.display_limit]
+    display={'limit':spec.display_limit,'total_result_rows':total_result_rows,
+             'returned_rows':len(payload['rows']), 'truncated':total_result_rows>spec.display_limit}
+    if display['truncated']:
+        warnings.append('Output display truncated; calculations used all selected records.')
+    fingerprint=dataset_fingerprint(df)
+    payload.update({'dataset_id':fingerprint[:16],
+                    'evidence':{'dataset_fingerprint_sha256':fingerprint,
+                                'executed_spec':definition,'accounting':accounting,
+                                'display':display,'warnings':warnings,
+                                'results':payload['rows'],
+                                'calculation_status':'completed'}})
+    return payload
+
+
+def run_tool(df,name,arguments):
     if name not in TOOLS:
         raise AnalysisError('Unknown tool.')
-    try:
-        payload=TOOLS[name](df,**arguments)
-    except TypeError as exc:
-        raise AnalysisError('Invalid tool arguments.') from exc
-    payload['dataset_id']=hashlib.sha256(df.to_csv(index=False).encode()).hexdigest()[:16]
-    return payload
+    if not isinstance(arguments,dict):
+        raise AnalysisError('Tool arguments must be an object.')
+    args=dict(arguments)
+    filters=args.pop('filters',[])
+    display_limit=args.pop('display_limit',None)
+    if name=='filter_rows':
+        try:
+            condition={k:args.pop(k) for k in ('field','operator')}
+        except KeyError:
+            raise AnalysisError('Filter requires field and operator.') from None
+        if 'value' in args:
+            condition['value']=args.pop('value')
+        if 'limit' in args:
+            display_limit=args.pop('limit')
+        filters=[*filters,condition]
+    spec={'spec_version':1,'tool':name,'arguments':args,'filters':filters}
+    if display_limit is not None:
+        spec['display_limit']=display_limit
+    return execute_spec(df,spec)

@@ -25,7 +25,10 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(payload['rows'][0]['value'],30)
             return text('Coffee leads with 30, using grouped_summary.')
         out=execute(self.df,'Highest revenue category?',generate)
-        self.assertEqual(out['status'],'answered')
+        self.assertEqual(out['status'],'evidence_available')
+        self.assertFalse(out['explanation_verified'])
+        self.assertTrue(out['calculation_verified'])
+        self.assertEqual(out['question'],'Highest revenue category?')
         self.assertEqual(len(out['trace']),1)
     def test_ungrounded_answer_blocked(self):
         out=execute(self.df,'Total?',lambda _:text('99999'))
@@ -34,6 +37,7 @@ class AgentTests(unittest.TestCase):
     def test_clarification(self):
         out=execute(self.df,'Best?',lambda _:call('request_clarification',{'question':'Best by which metric?'}))
         self.assertEqual(out['status'],'clarification')
+        self.assertEqual(out['trace'][0]['tool'],'request_clarification')
     def test_unknown_tool_not_executed(self):
         responses=iter([call('exec',{'code':'print(1)'}),text('Pretend answer')])
         out=execute(self.df,'Run code',lambda _:next(responses))

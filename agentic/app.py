@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import hashlib
 import pandas as pd
 import streamlit as st
 from engine import AnalysisError, load_csv, numeric_columns, run_tool
@@ -7,13 +8,13 @@ from engine import AnalysisError, load_csv, numeric_columns, run_tool
 ROOT=Path(__file__).resolve().parent
 st.set_page_config(page_title='BYTE Data Analyst',page_icon='📊',layout='wide')
 st.title('BYTE Data Analyst')
-st.caption('Phase 3 · Data analysis with Gemini')
+st.caption('M1 candidate · Five analytical tools with evidence · Live Gemini verification pending')
 st.info('Use the manual tools or ask Gemini to select tools. Persistent memory is not implemented yet.')
 with st.sidebar:
     st.header('Dataset')
     source=st.radio('Data source',['Example sales','Upload CSV'])
     upload=st.file_uploader('Choose CSV',type=['csv'],disabled=source!='Upload CSV')
-    st.caption('UTF-8, comma-separated, unique headers. Maximum 10 MiB, 100,000 rows and 100 columns. Empty fields count as missing.')
+    st.caption('UTF-8, comma-separated, unique headers. Maximum 10 MiB, 100,000 rows and 100 columns. Empty fields count as missing; leading-zero identifiers remain text.')
     st.caption('Manual tools work without a key. Uploads are not saved to disk. AI mode sends column names, types, your question and bounded tool results to Gemini.')
 try:
     if source=='Upload CSV':
@@ -25,6 +26,7 @@ try:
     df=load_csv(raw)
 except AnalysisError as exc:
     st.error(str(exc)); st.stop()
+source_hash=hashlib.sha256(raw).hexdigest()
 st.write(f'**{len(df):,} rows · {len(df.columns)} columns**')
 with st.expander('Dataset preview',expanded=True):
     st.dataframe(df.head(100),hide_index=True)
@@ -62,17 +64,42 @@ elif choice=='Measure correlation':
     else:
         args['x']=st.selectbox('First numeric column',nums)
         args['y']=st.selectbox('Second numeric column',[c for c in nums if c!=args['x']])
+if choice in ('Summarise groups','Analyse time trends','Measure correlation'):
+    with st.expander('Optional analysis filters (AND)'):
+        conditions=st.number_input('Number of filters',min_value=0,max_value=3,value=0,step=1)
+        if conditions:
+            args['filters']=[]
+        for i in range(conditions):
+            fcol=st.selectbox(f'Filter {i+1} column',cols,key=f'filter_column_{i}')
+            op=st.selectbox(f'Filter {i+1} operator',['eq','ne','gt','ge','lt','le','contains','is_missing','not_missing'],key=f'filter_op_{i}')
+            filter_spec={'field':fcol,'operator':op}
+            if op not in ('is_missing','not_missing'):
+                filter_spec['value']=st.text_input(f'Filter {i+1} value',key=f'filter_value_{i}')
+            args['filters'].append(filter_spec)
+
+manual_submission={'fingerprint':source_hash,'tool':labels[choice],
+                   'arguments':json.loads(json.dumps(args,default=str))}
 if st.button('Run analysis',type='primary',disabled=not ready):
     try:
         output=run_tool(df,labels[choice],args)
-        st.subheader('Results')
+        st.session_state['last_manual']={'submission':manual_submission,'output':output}
+    except AnalysisError as exc:
+        st.session_state.pop('last_manual',None)
+        st.error(str(exc))
+saved_manual=st.session_state.get('last_manual')
+if saved_manual:
+    if saved_manual['submission'] != manual_submission:
+        st.caption('Analysis settings or dataset changed. The previous result is hidden; click Run analysis to submit the new settings.')
+    else:
+        output=saved_manual['output']
+        st.subheader('Results — submitted analysis')
+        st.caption('Dataset SHA-256: '+source_hash+' · Tool: '+output['tool'])
         st.dataframe(pd.DataFrame(output['rows']),hide_index=True)
         st.json(output['metadata'])
-        with st.expander('Tool evidence'):
-            st.json({'tool':output['tool'],'arguments':args,'dataset_id':output['dataset_id']})
-        st.download_button('Download result JSON',json.dumps(output,indent=2,allow_nan=False),'analysis_result.json','application/json')
-    except AnalysisError as exc:
-        st.error(str(exc))
+        with st.expander('Executed specification and calculation evidence'):
+            st.json(output['evidence'])
+        st.download_button('Download result JSON',json.dumps(output,indent=2,allow_nan=False),
+                           'analysis_result.json','application/json')
 st.divider()
 st.subheader('Ask your dataset')
 from agent import AgentError, ask, available_models, configuration
@@ -94,25 +121,30 @@ if submit and consent:
     with st.spinner('Selecting tools and analysing…'):
         try:
             answer=ask(df,question)
-            st.session_state['last_answer']={'dataset':raw,'response':answer}
+            st.session_state['last_answer']={'dataset_fingerprint':source_hash,'submitted_question':question,'response':answer}
         except AgentError as exc:
             st.session_state.pop('last_answer',None)
             st.error(str(exc))
 saved=st.session_state.get('last_answer')
-if saved and saved['dataset']!=raw:
+if saved and saved['dataset_fingerprint']!=source_hash:
     st.session_state.pop('last_answer',None)
     saved=None
 if saved:
     answer=saved['response']
+    st.caption('Submitted question: '+saved['submitted_question'])
+    if question != saved['submitted_question']:
+        st.warning('Unsubmitted question edits are pending. Evidence below belongs ONLY to the submitted question.')
+    st.caption('Dataset SHA-256: '+saved['dataset_fingerprint'])
     st.caption('Status: '+answer['status'])
     st.write(answer['answer'])
-    st.caption('Model explanation: check it against the computed evidence below.')
+    st.caption('Model explanation is NOT independently verified. Completed calculations appear in the tool evidence below; relevance to the question must be checked.')
     for i,event in enumerate(answer['trace'],1):
         with st.expander(f"Tool {i}: {event['tool']}",expanded=True):
             st.json(event['arguments'])
             if 'rows' in event['result']:
                 st.dataframe(pd.DataFrame(event['result']['rows']),hide_index=True)
                 st.json(event['result']['metadata'])
+                st.json(event['result']['evidence'])
             else: st.json(event['result'])
     st.download_button('Download AI analysis evidence',json.dumps(answer,indent=2,allow_nan=False),
         'ai_analysis.json','application/json')
