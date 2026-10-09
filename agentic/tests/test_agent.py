@@ -30,6 +30,26 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(out['calculation_verified'])
         self.assertEqual(out['question'],'Highest revenue category?')
         self.assertEqual(len(out['trace']),1)
+    def test_malformed_model_filter_remains_unverified(self):
+        sequence=iter([call('grouped_summary',{'group':'category','metric':'revenue',
+            'operation':'sum','filters':[{'field':'category','operator':[],
+                                           'value':'Coffee'}]}),
+                       text('Coffee wins, trust me.')])
+        out=execute(self.df,'Which category leads?',lambda _:next(sequence))
+        self.assertEqual(out['status'],'unverified')
+        self.assertFalse(out['calculation_verified'])
+        self.assertIn('error',out['trace'][0]['result'])
+        self.assertNotIn('Coffee wins',out['answer'])
+
+    def test_malformed_model_time_format_remains_unverified(self):
+        df=load_csv(b'd,amount\n2026-01-01,20\n')
+        sequence=iter([call('time_trend',{'date_column':'d','metric':'amount',
+                           'date_format':[],'operation':'sum'}),
+                       text('January 20.')])
+        out=execute(df,'Monthly totals?',lambda _:next(sequence))
+        self.assertEqual(out['status'],'unverified')
+        self.assertIn('error',out['trace'][0]['result'])
+
     def test_ungrounded_answer_blocked(self):
         out=execute(self.df,'Total?',lambda _:text('99999'))
         self.assertEqual(out['status'],'unverified')

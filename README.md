@@ -4,7 +4,7 @@
 
 ## Local Windows setup
 
-See **[`agentic/docs/M0_WINDOWS.md`](agentic/docs/M0_WINDOWS.md)** for exact install, real Gemini verification and Streamlit checks. `agentic/docs/M1_HANDOFF.md` documents the specification contract, evidence, limits and exclusions. `agentic/verify_live.py` uses an existing **private** local `.env`/environment variable and synthetic data only; it does not print keys. Do not commit or package secrets.
+For the independent-review repairs, see **[`agentic/docs/M1_REPAIR_HANDOFF.md`](agentic/docs/M1_REPAIR_HANDOFF.md)**. See **[`agentic/docs/M0_WINDOWS.md`](agentic/docs/M0_WINDOWS.md)** for exact install, real Gemini verification and Streamlit checks. `agentic/docs/M1_HANDOFF.md` documents the specification contract, evidence, limits and exclusions. `agentic/verify_live.py` uses an existing **private** local `.env`/environment variable and synthetic data only; it does not print keys. Do not commit or package secrets.
 
 ```powershell
 cd agentic
@@ -28,10 +28,10 @@ py -3.13 -m venv .venv
 
 ## Source history
 
-This distribution includes `phaseM1-history.bundle` with the original Phase 3 baseline and M1 commit. Restore with:
+The repaired distribution includes `phaseM1-repair-history.bundle` with the original Phase 3 baseline and M1 commit. Restore with:
 
 ```powershell
-git clone -b main .\phaseM1-history.bundle byte-ml-with-history
+git clone -b main .\phaseM1-repair-history.bundle byte-ml-with-history
 ```
 
 The original audited ZIP is left untouched. `.env`, `.venv`, caches, DBs, user uploads and local live-verification logs are not distributed.

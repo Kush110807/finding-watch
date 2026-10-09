@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from collections.abc import Mapping
 from dotenv import dotenv_values
 from google import genai
 from google.genai import types
@@ -89,7 +90,7 @@ Explain results with tool names and relevant caveats. Do not invent derived perc
 '''
 
 def execute(df,question,generate):
-    if not question.strip() or len(question)>4000:
+    if not isinstance(question,str) or not question.strip() or len(question)>4000:
         raise AgentError('Enter a question between 1 and 4,000 characters.')
     schema=[{'name':c,'dtype':str(df[c].dtype),'interpretation':('numeric' if c in numeric_columns(df) else 'text_or_identifier')} for c in df]
     initial=json.dumps({'question':question,'schema':schema},ensure_ascii=False)
@@ -120,7 +121,17 @@ def execute(df,question,generate):
             calls+=1
             if calls>MAX_CALLS:
                 return {'status':'limited','answer':'Tool-call limit reached. Ask a narrower question.','trace':trace,'question':question,'dataset_fingerprint_sha256':fingerprint}
-            args=dict(fc.args or {})
+            # SDK function args are expected to be an object; do not unpack an
+            # arbitrary list/string or leak a Python TypeError into the app.
+            raw_args = fc.args if fc.args is not None else {}
+            if not isinstance(raw_args, Mapping):
+                args = {}
+                output = {'error':'Tool arguments must be an object.'}
+                trace.append({'tool':fc.name,'arguments':{},'result':output})
+                replies.append(types.Part(function_response=types.FunctionResponse(
+                    name=fc.name,id=fc.id,response=output)))
+                continue
+            args=dict(raw_args)
             if fc.name=='request_clarification':
                 q=args.get('question')
                 trace.append({'tool':'request_clarification','arguments':args,
@@ -131,8 +142,10 @@ def execute(df,question,generate):
                 output=run_tool(df,fc.name,args)
                 if len(json.dumps(output,ensure_ascii=False))>40000:
                     output={'error':'Tool result exceeds model context limit. Choose a smaller output or narrower question.'}
-            except (AnalysisError,ValueError,KeyError,OverflowError):
-                output={'error':'Invalid analysis arguments or data. Check column names, numeric types, date format and supported operations.'}
+            except AnalysisError as exc:
+                # AnalysisError is a controlled, user-safe validation message.
+                # Surface the actual range/type blocker instead of generic failure.
+                output={'error':str(exc)}
             trace.append({'tool':fc.name,'arguments':args,'result':output})
             replies.append(types.Part(function_response=types.FunctionResponse(name=fc.name,id=fc.id,response=output)))
         contents.append(types.Content(role='user',parts=replies))

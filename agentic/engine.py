@@ -6,7 +6,8 @@ import json
 import hashlib
 import re
 import pandas as pd
-from pandas.api.types import is_numeric_dtype, is_bool_dtype
+from pandas.api.types import is_numeric_dtype, is_bool_dtype, is_integer_dtype
+import numpy as np
 from specs import AnalysisSpec, SpecError
 
 MAX_BYTES = 10 * 1024 * 1024
@@ -95,6 +96,8 @@ def numeric_columns(df):
 
 
 def column(df,name):
+    if not isinstance(name, str) or not name:
+        raise AnalysisError('Column name must be non-empty text.')
     if name not in df.columns:
         raise AnalysisError(f'Unknown column: {name}')
     return df[name]
@@ -109,12 +112,64 @@ def numeric(df,name):
     return s
 
 
+def _safe_cell(value):
+    """Serialize scalars WITHOUT forcing arbitrary precision Python ints to floats.
+
+    pandas to_json / inferred float columns can silently lose huge integers,
+    especially in the presence of null values. Keep Python ints through JSON.
+    """
+    if value is None or value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        number = float(value)
+        if math.isnan(number):
+            return None
+        if not math.isfinite(number):
+            raise AnalysisError('Calculation produced a non-finite value; numeric range is unsupported.')
+        return number
+    if isinstance(value, (pd.Timestamp,)):
+        return value.isoformat()
+    if isinstance(value, str):
+        return value
+    raise AnalysisError('Unsupported result value type; cannot serialize without loss.')
+
+
 def result(tool,frame,**metadata):
-    for c in frame.select_dtypes(include='number'):
-        if any(not math.isfinite(float(v)) for v in frame[c].dropna()):
-            raise AnalysisError('Calculation overflowed. Rescale numeric values.')
-    return {'tool':tool,'metadata':metadata,
-            'rows':json.loads(frame.to_json(orient='records',date_format='iso',double_precision=15))}
+    rows=[{str(key):_safe_cell(val) for key,val in zip(frame.columns, record)}
+          for record in frame.itertuples(index=False,name=None)]
+    return {'tool':tool,'metadata':metadata,'rows':rows}
+
+
+def _safe_aggregate(values, operation):
+    """Accumulate integer sums in Python ints, never fixed-width numpy/pandas.
+
+    Floating sums use math.fsum, rejecting overflow instead of making a
+    seemingly valid but incorrect result. Means of integers above 2**53 are
+    refused because conversion to float could silently destroy units.
+    """
+    valid = values.dropna()
+    if valid.empty:
+        return None
+    if operation == 'min':
+        return _safe_cell(valid.min())
+    if operation == 'max':
+        return _safe_cell(valid.max())
+    integer = is_integer_dtype(values.dtype)
+    if operation == 'sum' and integer:
+        return sum(int(v) for v in valid)  # Python int has no 64-bit wraparound
+    if operation == 'mean' and integer and any(abs(int(v)) > 2**53 for v in valid):
+        raise AnalysisError('Integer mean exceeds the exact floating-point precision range (2**53). Rescale the metric or use sum/min/max.')
+    try:
+        total = math.fsum(float(v) for v in valid)
+    except (ValueError, OverflowError):
+        raise AnalysisError('Numeric accumulation exceeds supported finite precision; no result was produced.') from None
+    if not math.isfinite(total):
+        raise AnalysisError('Numeric accumulation is non-finite; no result was produced.')
+    return total if operation == 'sum' else total / len(valid)
 
 
 def inspect_dataset(df):
@@ -135,7 +190,7 @@ def _condition(df,field,operator,value=None):
         if value is None:
             raise AnalysisError('Contains filter requires a text value.')
         return s.astype('string').str.contains(str(value),regex=False,na=False).fillna(False),value
-    if operator not in {'eq','ne','gt','ge','lt','le'}:
+    if not isinstance(operator,str) or operator not in ('eq','ne','gt','ge','lt','le'):
         raise AnalysisError('Unknown filter operator.')
     if field in numeric_columns(df):
         numeric(df,field)
@@ -171,7 +226,7 @@ def filter_rows(df,field,operator,value=None,limit=100):
 
 def grouped_summary(df,group,metric=None,operation='sum'):
     column(df,group)
-    if operation not in {'sum','mean','min','max','count_rows'}:
+    if not isinstance(operation,str) or operation not in ('sum','mean','min','max','count_rows'):
         raise AnalysisError('Unsupported aggregation.')
     if df[group].nunique(dropna=False)>1000:
         raise AnalysisError('Choose a grouping column with at most 1,000 distinct values.')
@@ -179,21 +234,24 @@ def grouped_summary(df,group,metric=None,operation='sum'):
         numeric(df,metric)
     if df.empty:
         raise AnalysisError('No selected rows match the filters.')
-    gb=df.groupby(group,dropna=False,sort=False)
-    values=gb.size() if operation=='count_rows' else (gb[metric].sum(min_count=1) if operation=='sum' else getattr(gb[metric],operation)())
-    out=pd.DataFrame({'group_value':values.index,'value':values.values})
-    out['row_count']=gb.size().values
-    if operation!='count_rows':
-        out['non_missing_metric_count']=gb[metric].count().values
-    out=out.sort_values('value',ascending=False,na_position='last',kind='stable')
+    rows=[]
+    for label,part in df.groupby(group,dropna=False,sort=False):
+        value=len(part) if operation=='count_rows' else _safe_aggregate(part[metric],operation)
+        row={'group_value':_safe_cell(label), 'value':value, 'row_count':len(part)}
+        if operation!='count_rows':
+            row['non_missing_metric_count']=int(part[metric].count())
+        rows.append(row)
+    # Do not create a mixed nullable float column; values may exceed int64.
+    rows.sort(key=lambda r:(r['value'] is None,-r['value'] if r['value'] is not None else 0))
+    out=pd.DataFrame(rows,dtype=object)
     return result('grouped_summary',out,group_column=group,metric=metric,operation=operation,
                   policy='Missing group labels retained as null; missing metrics excluded; all-missing sums remain null.')
 
 
 def time_trend(df,date_column,metric=None,frequency='month',date_format='%Y-%m-%d',operation='sum'):
-    if date_format not in {'%Y-%m-%d','%d/%m/%Y','%m/%d/%Y'} or frequency not in {'day','week','month'}:
+    if not isinstance(date_format,str) or date_format not in ('%Y-%m-%d','%d/%m/%Y','%m/%d/%Y') or not isinstance(frequency,str) or frequency not in ('day','week','month'):
         raise AnalysisError('Select an explicit supported date format and frequency.')
-    if operation not in {'sum','mean','count_rows'}:
+    if not isinstance(operation,str) or operation not in ('sum','mean','count_rows'):
         raise AnalysisError('Unsupported time aggregation.')
     s=column(df,date_column)
     dates=pd.to_datetime(s.astype('string'),format=date_format,errors='coerce',exact=True)
@@ -205,13 +263,17 @@ def time_trend(df,date_column,metric=None,frequency='month',date_format='%Y-%m-%
     tmp=pd.DataFrame({'period':dates.dt.to_period({'day':'D','week':'W-SUN','month':'M'}[frequency]).dt.start_time},index=df.index)
     if operation!='count_rows':
         tmp['metric']=numeric(df,metric)
-    gb=tmp.dropna(subset=['period']).groupby('period',sort=True)
-    vals=gb.size() if operation=='count_rows' else (gb.metric.sum(min_count=1) if operation=='sum' else gb.metric.mean())
-    if len(vals)>1000:
+    buckets=tmp.dropna(subset=['period']).groupby('period',sort=True)
+    if buckets.ngroups>1000:
         raise AnalysisError('More than 1,000 time buckets; choose a coarser frequency.')
-    out=pd.DataFrame({'period_start':vals.index.strftime('%Y-%m-%d'),'value':vals.values,'row_count':gb.size().values})
-    if operation!='count_rows':
-        out['non_missing_metric_count']=gb.metric.count().values
+    rows=[]
+    for period,part in buckets:
+        value=len(part) if operation=='count_rows' else _safe_aggregate(part['metric'],operation)
+        row={'period_start':period.strftime('%Y-%m-%d'),'value':value,'row_count':len(part)}
+        if operation!='count_rows':
+            row['non_missing_metric_count']=int(part['metric'].count())
+        rows.append(row)
+    out=pd.DataFrame(rows,dtype=object)
     return result('time_trend',out,date_column=date_column,metric=metric,operation=operation,
                   excluded_missing_dates=int(dates.isna().sum()),frequency=frequency,
                   date_format=date_format,
@@ -222,6 +284,9 @@ def correlation(df,x,y):
     if x==y:
         raise AnalysisError('Choose two different numeric columns.')
     pair=pd.DataFrame({'x':numeric(df,x),'y':numeric(df,y)}).dropna()
+    for label in ('x','y'):
+        if is_integer_dtype(pair[label].dtype) and any(abs(int(v))>2**53 for v in pair[label]):
+            raise AnalysisError('Correlation would lose integer precision beyond 2**53; rescale the columns.')
     if len(pair)<3:
         raise AnalysisError('At least three complete pairs are required.')
     if pair.x.nunique()<2 or pair.y.nunique()<2:
@@ -310,6 +375,10 @@ def execute_spec(df,raw_spec):
         warnings.append('Pearson correlation is not evidence of causation.')
     elif tool=='inspect_dataset':
         warnings.append('Dataset profile reflects selected rows only; columns and types remain unchanged.') if definition['filters'] else None
+    if tool in ('grouped_summary','time_trend') and any(
+            isinstance(row.get('value'), int) and not isinstance(row.get('value'),bool)
+            and abs(row['value']) > 2**53 for row in payload['rows']):
+        warnings.append('Large integer results are exact in JSON; some browser and spreadsheet displays may round values beyond 2**53.')
     total_result_rows=n if tool=='filter_rows' else len(payload['rows'])
     if total_result_rows>spec.display_limit:
         payload['rows']=payload['rows'][:spec.display_limit]
@@ -328,7 +397,7 @@ def execute_spec(df,raw_spec):
 
 
 def run_tool(df,name,arguments):
-    if name not in TOOLS:
+    if not isinstance(name,str) or name not in TOOLS:
         raise AnalysisError('Unknown tool.')
     if not isinstance(arguments,dict):
         raise AnalysisError('Tool arguments must be an object.')
@@ -344,6 +413,8 @@ def run_tool(df,name,arguments):
             condition['value']=args.pop('value')
         if 'limit' in args:
             display_limit=args.pop('limit')
+        if not isinstance(filters,list):
+            raise AnalysisError('Filters must be a list of at most eight conditions.')
         filters=[*filters,condition]
     spec={'spec_version':1,'tool':name,'arguments':args,'filters':filters}
     if display_limit is not None:

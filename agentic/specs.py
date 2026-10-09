@@ -27,6 +27,8 @@ def _mapping(value, label):
 
 
 def _keys(obj, allowed, label):
+    if any(not isinstance(key, str) for key in obj):
+        raise SpecError(f'{label.capitalize()} field names must be strings.')
     unknown = sorted(obj.keys() - set(allowed))
     if unknown:
         raise SpecError(f'Unsupported {label} fields: {unknown}.')
@@ -76,7 +78,7 @@ class AnalysisSpec:
                 raise SpecError('Unsupported time aggregation.')
             if arguments['frequency'] not in ('day','week','month'):
                 raise SpecError('Unsupported time frequency.')
-            if arguments['date_format'] not in DATE_FORMATS:
+            if not isinstance(arguments['date_format'], str) or arguments['date_format'] not in DATE_FORMATS:
                 raise SpecError('Explicit date format is required.')
         if tool in ('grouped_summary','time_trend'):
             if arguments['operation'] != 'count_rows' and not arguments.get('metric'):
@@ -91,7 +93,7 @@ class AnalysisSpec:
             f = _mapping(f, 'filter')
             _keys(f, ('field','operator','value'), 'filter')
             _string(f.get('field'), 'Filter field')
-            if f.get('operator') not in OPERATORS:
+            if not isinstance(f.get('operator'), str) or f['operator'] not in OPERATORS:
                 raise SpecError('Unsupported filter operator.')
             op=f['operator']
             if op in ('is_missing','not_missing'):

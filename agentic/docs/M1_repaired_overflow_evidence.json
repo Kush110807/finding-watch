@@ -1,0 +1,61 @@
+{
+  "tool": "grouped_summary",
+  "metadata": {
+    "group_column": "g",
+    "metric": "amount",
+    "operation": "sum",
+    "policy": "Missing group labels retained as null; missing metrics excluded; all-missing sums remain null."
+  },
+  "rows": [
+    {
+      "group_value": "A",
+      "value": 9999999999999990000,
+      "row_count": 10000,
+      "non_missing_metric_count": 10000
+    }
+  ],
+  "dataset_id": "bd39baff0b4aa8cf",
+  "evidence": {
+    "dataset_fingerprint_sha256": "bd39baff0b4aa8cfbfffb56635dc6a3ea8cb52ed8491acd60d9f586001d053c5",
+    "executed_spec": {
+      "spec_version": 1,
+      "tool": "grouped_summary",
+      "arguments": {
+        "group": "g",
+        "metric": "amount",
+        "operation": "sum"
+      },
+      "filters": [],
+      "display_limit": 100
+    },
+    "accounting": {
+      "input_rows": 10000,
+      "selected_rows": 10000,
+      "excluded_by_filters": 0,
+      "filters_sequential": [],
+      "operation_exclusions": {
+        "missing_group_labels_excluded": 0,
+        "missing_group_labels_included": 0,
+        "missing_metric_excluded_from_values": 0
+      }
+    },
+    "display": {
+      "limit": 100,
+      "total_result_rows": 1,
+      "returned_rows": 1,
+      "truncated": false
+    },
+    "warnings": [
+      "Large integer results are exact in JSON; some browser and spreadsheet displays may round values beyond 2**53."
+    ],
+    "results": [
+      {
+        "group_value": "A",
+        "value": 9999999999999990000,
+        "row_count": 10000,
+        "non_missing_metric_count": 10000
+      }
+    ],
+    "calculation_status": "completed"
+  }
+}
