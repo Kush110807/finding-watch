@@ -2,7 +2,7 @@
 import unittest
 from pathlib import Path
 from engine import load_csv,run_tool
-from stage1_logic import suggested_questions,calculated_trace_entries,primary_candidates,two_group_difference,candidate_title
+from stage1_logic import suggested_questions,suggested_date_format,calculated_trace_entries,primary_candidates,two_group_difference,candidate_title
 from presentation import display_rows,summary
 
 DEMO=Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv'
@@ -35,6 +35,63 @@ class Stage1LogicTests(unittest.TestCase):
     def test_only_id_or_dates_does_not_create_business_group(self):
         df=load_csv(b'order_id,amount\n001,1\n002,2\n')
         self.assertFalse(any(e['tool']=='grouped_summary' for e in suggested_questions(list(df.columns),['amount'],df)))
+
+    def _date_example(self, raw):
+        df=load_csv(raw.encode('utf-8'))
+        matches=[s for s in suggested_questions(list(df.columns),['amount'],df)
+                 if s['tool']=='time_trend']
+        return df, matches
+
+    def test_iso_monthly_suggestion_is_executable(self):
+        df,matches=self._date_example('period_date,amount\n2026-01-09,4\n2026-02-10,8\n')
+        self.assertEqual(len(matches),1)
+        self.assertEqual(matches[0]['arguments']['date_format'],'%Y-%m-%d')
+        out=run_tool(df,matches[0]['tool'],matches[0]['arguments'])
+        self.assertEqual(out['evidence']['accounting']['selected_rows'],2)
+        self.assertEqual(sum(r['value'] for r in out['rows']),2)
+
+    def test_unambiguous_day_first_format_is_selected_from_values(self):
+        df,matches=self._date_example('purchase_date,amount\n13/02/2026,4\n03/03/2026,8\n')
+        self.assertEqual(len(matches),1)
+        self.assertEqual(matches[0]['arguments']['date_format'],'%d/%m/%Y')
+        out=run_tool(df,matches[0]['tool'],matches[0]['arguments'])
+        self.assertEqual(sum(r['value'] for r in out['rows']),2)
+
+    def test_unambiguous_month_first_format_is_selected_from_values(self):
+        df,matches=self._date_example('sale_date,amount\n02/13/2026,4\n03/05/2026,8\n')
+        self.assertEqual(len(matches),1)
+        self.assertEqual(matches[0]['arguments']['date_format'],'%m/%d/%Y')
+        self.assertEqual(sum(r['value'] for r in run_tool(df,matches[0]['tool'],matches[0]['arguments'])['rows']),2)
+
+    def test_ambiguous_slash_dates_never_create_monthly_suggestion(self):
+        _,matches=self._date_example('sale_date,amount\n01/02/2026,4\n03/04/2026,8\n')
+        self.assertFalse(matches)
+        self.assertIsNone(suggested_date_format(['01/02/2026','03/04/2026']))
+
+    def test_invalid_dates_prevent_monthly_suggestion_instead_of_dropping_rows(self):
+        for raw in ('2026-02-30','2026-01-10\nnot-a-date',
+                    ' 2026-01-10 ', '2026-01-10 ',
+                    '1400-01-10', '3000-01-10',
+                    '13/02/2026\n31/02/2026','2026-01-01T10:30:00'):
+            with self.subTest(raw=raw):
+                _,matches=self._date_example('invoice_date,amount\n'+
+                    '\n'.join(date+',1' for date in raw.split('\n'))+'\n')
+                self.assertFalse(matches)
+
+    def test_empty_dates_never_suggest_and_missing_values_are_not_invalid(self):
+        _,empty=self._date_example('created_date,amount\n,4\n,8\n')
+        self.assertFalse(empty)
+        df,matches=self._date_example('created_date,amount\n2026-01-10,4\n,8\n')
+        self.assertEqual(len(matches),1)
+        self.assertEqual(matches[0]['arguments']['date_format'],'%Y-%m-%d')
+        # Exactly one valid date: the missing row is excluded by deterministic engine.
+        out=run_tool(df,matches[0]['tool'],matches[0]['arguments'])
+        self.assertEqual(sum(r['value'] for r in out['rows']),1)
+        self.assertEqual(out['evidence']['accounting']['input_rows'],2)
+
+    def test_date_named_column_with_identifiers_does_not_guess_calendar_format(self):
+        _,matches=self._date_example('effective_date,amount\n20260101,4\n20260201,8\n')
+        self.assertFalse(matches)
 
     def test_inspection_then_grouping_primary_is_aggregation(self):
         inspected=run_tool(self.df,'inspect_dataset',{})

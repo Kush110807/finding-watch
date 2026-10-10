@@ -1,10 +1,65 @@
 """Pure Stage 1 display routing. Never authorizes model decisions or alters evidence."""
 from collections.abc import Mapping
+from datetime import datetime
+import re
+import pandas as pd
 
 TOOL_NAMES = {'inspect_dataset': 'Dataset inspection', 'filter_rows': 'Matching records',
               'grouped_summary': 'Grouped summary', 'time_trend': 'Time analysis',
               'correlation': 'Numeric relationship'}
 
+
+# Date formats accepted by the existing deterministic engine. A local suggestion
+# requires exact syntax and valid dates for ALL nonmissing observations. Slash-
+# separated formats need at least one value that disambiguates day/month order.
+_DATE_PATTERNS = (
+    ('%Y-%m-%d', re.compile(r"\d{4}-\d{2}-\d{2}\Z")),
+    ('%d/%m/%Y', re.compile(r"\d{2}/\d{2}/\d{4}\Z")),
+    ('%m/%d/%Y', re.compile(r"\d{2}/\d{2}/\d{4}\Z")),
+)
+
+
+def suggested_date_format(series):
+    """Return a safe executable format, or None when absent/invalid/ambiguous.
+
+    We do not interpret numbers, guess 03/04/2026, or silently discard invalid
+    values. This governs UI suggestions only; the engine retains its own rules.
+    """
+    values=[]
+    for raw in series:
+        if pd.isna(raw):
+            continue
+        if not isinstance(raw, str):
+            return None
+        # Never normalize a nonmissing cell for the suggestion: the engine
+        # parses original values and rejects surrounding whitespace.
+        if raw == '':
+            continue
+        values.append(raw)
+    if not values:
+        return None
+    for fmt,pattern in _DATE_PATTERNS:
+        if not all(pattern.fullmatch(v) for v in values):
+            continue
+        try:
+            for value in values:
+                # strptime can be lenient in some situations; regex enforces
+                # padding and complete input, while strptime checks calendar days.
+                datetime.strptime(value,fmt)
+        except ValueError:
+            continue
+        if fmt=='%d/%m/%Y' and not any(int(v[:2])>12 for v in values):
+            continue
+        if fmt=='%m/%d/%Y' and not any(int(v[3:5])>12 for v in values):
+            continue
+        # strptime supports years outside pandas Timestamp's range. Match
+        # the existing time_trend parser, not merely the calendar grammar.
+        parsed=pd.to_datetime(pd.Series(values,dtype='string'),
+                              format=fmt,errors='coerce',exact=True)
+        if not bool(parsed.notna().all()):
+            continue
+        return fmt
+    return None
 
 def suggested_questions(columns, numeric, frame):
     """Build bounded local examples from the CURRENT schema; never route free text."""
@@ -27,8 +82,11 @@ def suggested_questions(columns, numeric, frame):
                           'tool':'grouped_summary','arguments':{'group':group,'operation':'count_rows'}})
     for c in cols:
         if 'date' in c.casefold() or 'time' in c.casefold():
+            date_format=suggested_date_format(frame[c])
+            if date_format is None:
+                continue
             proposals.append({'question':f'How many records are there each month by {c}?',
-                              'tool':'time_trend','arguments':{'date_column':c,'date_format':'%Y-%m-%d',
+                              'tool':'time_trend','arguments':{'date_column':c,'date_format':date_format,
                                                              'frequency':'month','operation':'count_rows'}})
             break
     return proposals[:3]

@@ -495,5 +495,99 @@ class Stage1JourneyAppTests(unittest.TestCase):
         self.assertEqual(at.session_state['stage1_question'],'Explain this dataset')
         self.assertTrue(any('retry Analyse' in str(x.value) for x in at.error))
 
+class Stage1DownloadLocationAppTests(unittest.TestCase):
+    """Run with REAL Streamlit AppTest and Gemini SDK on Windows.
+
+    Model traffic is patched, but Streamlit rendering and widget identity are
+    real. A missing StreamlitDependency should remain a test import failure.
+    """
+
+    @staticmethod
+    def _event(tool, output):
+        return {'tool':tool,'arguments':output['evidence']['executed_spec']['arguments'],
+                'result':output}
+
+    @staticmethod
+    def _answer(trace):
+        return {'status':'evidence_available','answer':'Model commentary is unverified',
+                'trace':trace,'calculation_verified':True,'explanation_verified':False}
+
+    def _ask(self, at, trace, question):
+        with patch('agent.ask',return_value=self._answer(trace)):
+            _field(at,'checkbox','I agree to send my question and relevant dataset information to Gemini.').check().run()
+            _field(at,'text_input','Your question').input(question).run()
+            _field(at,'button','Analyse').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        return at
+
+    def test_profile_download_and_local_suggested_result_coexist(self):
+        at=_loaded()
+        _field(at,'button','Profile all columns').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['stage1_profile']['output']['tool'],'inspect_dataset')
+        _field(at,'button','Analyse').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['stage1_local_answer']['output']['tool'],'grouped_summary')
+        self.assertTrue(any('How this was calculated'==e.label for e in at.get('expander')))
+        self.assertEqual([(r['group_value'],r['value'])
+                          for r in at.session_state['stage1_local_answer']['output']['rows']],
+                         [('Coffee',3000),('Snacks',1400)])
+
+    def test_local_challenge_confirmation_renders_its_own_download(self):
+        at=_loaded()
+        _field(at,'button','Analyse').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        _field(at,'selectbox','Challenged filter column').select('category').run()
+        _field(at,'text_input','Challenged filter value').input('Coffee').run()
+        _field(at,'button','Run confirmed comparison').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        comparison=at.session_state['last_suggested_comparison']['result']
+        self.assertEqual(comparison['status'],'completed')
+        self.assertEqual(comparison['accounting']['baseline']['selected_rows'],4)
+        self.assertEqual(comparison['accounting']['challenged']['selected_rows'],2)
+        self.assertTrue(any('confirmed' in str(x.value).lower() for x in at.success))
+        self.assertTrue(any('User-confirmed Challenge' in x.value for x in at.subheader))
+        # Changing the exact condition hides the previous completed result.
+        _field(at,'text_input','Challenged filter value').input('Snacks').run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertFalse(any('User-confirmed Challenge' in x.value for x in at.subheader))
+
+    def test_ai_primary_and_supporting_identical_outputs_both_render(self):
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        grouped=run_tool(df,'grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+        event=self._event('grouped_summary',grouped)
+        at=self._ask(_loaded(),[event], 'Recompute the same revenue result')
+        self.assertEqual(at.session_state['last_visible_ai_trace_index'],1)
+        self.assertEqual(at.session_state['last_answer']['response']['trace'][0]['result'],grouped)
+        self.assertTrue(any('Calculated finding' in x.value for x in at.subheader))
+        self.assertTrue(any('Other calculations and execution details'==e.label
+                            for e in at.get('expander')))
+
+    def test_two_identical_ai_trace_downloads_and_primary_choice(self):
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        grouped=run_tool(df,'grouped_summary',{'group':'category','operation':'count_rows'})
+        event=self._event('grouped_summary',grouped)
+        at=self._ask(_loaded(),[event,event],'Show both calculations')
+        self.assertTrue(any('Which calculated result would you like to see?'==s.label for s in at.selectbox))
+        chooser=_field(at,'selectbox','Which calculated result would you like to see?')
+        chooser.select(chooser.options[1]).run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['last_visible_ai_trace_index'],2)
+        self.assertEqual(len(at.session_state['last_answer']['response']['trace']),2)
+        self.assertTrue(any('Calculated finding' in x.value for x in at.subheader))
+        self.assertTrue(any('Other calculations and execution details'==e.label
+                            for e in at.get('expander')))
+
+    def test_inspection_then_grouped_aggregation_keeps_both_download_surfaces(self):
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        inspection=run_tool(df,'inspect_dataset',{})
+        grouped=run_tool(df,'grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+        trace=[self._event('inspect_dataset',inspection),self._event('grouped_summary',grouped)]
+        at=self._ask(_loaded(),trace,'Inspect then calculate revenue')
+        self.assertEqual(at.session_state['last_visible_ai_trace_index'],2)
+        self.assertEqual(len(at.session_state['last_answer']['response']['trace']),2)
+        self.assertTrue(any('Calculated finding' in x.value for x in at.subheader))
+        self.assertFalse(at.exception,str(at.exception))
+
 if __name__ == "__main__":
     unittest.main()

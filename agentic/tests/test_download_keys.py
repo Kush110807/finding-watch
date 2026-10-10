@@ -25,6 +25,37 @@ class DownloadKeyTests(unittest.TestCase):
         self.assertEqual(evidence_key('ai_response'),evidence_key('ai_response'))
         self.assertNotEqual(evidence_key('manual_result'),evidence_key('clarified_result'))
 
+    def test_all_stage1_nontrace_locations_have_distinct_stable_keys(self):
+        new_locations=['stage1_profile','stage1_local_result','suggested_comparison']
+        existing=['manual_result','clarified_result','manual_comparison',
+                  'clarified_comparison','ai_comparison','ai_response']
+        keys=[evidence_key(location) for location in new_locations+existing]
+        self.assertEqual(len(keys),len(set(keys)))
+        for location in new_locations:
+            with self.subTest(location=location):
+                self.assertEqual(evidence_key(location),evidence_key(location,0))
+                self.assertIn(location,evidence_key(location))
+                for invalid in [-1,1,2,True,1.0,'1',None]:
+                    with self.assertRaises(ValueError):
+                        evidence_key(location,invalid)
+
+    def test_primary_and_supporting_results_use_distinct_one_based_positions(self):
+        # Even when primary and supporting evidence is byte-for-byte identical,
+        # the two widgets exist simultaneously, once at each rendering surface.
+        keys=[evidence_key(location,position)
+              for location in ['ai_trace_result','ai_primary_result','ai_support_result']
+              for position in [1,2,3]]
+        self.assertEqual(len(keys),len(set(keys)))
+        self.assertEqual(evidence_key('ai_primary_result',2),
+                         evidence_key('ai_primary_result',2))
+        self.assertNotEqual(evidence_key('ai_primary_result',2),
+                            evidence_key('ai_support_result',2))
+        for location in ('ai_primary_result','ai_support_result','ai_trace_result'):
+            with self.subTest(location=location):
+                for invalid in [0,-1,True,1.0,'1',None]:
+                    with self.assertRaises(ValueError):
+                        evidence_key(location,invalid)
+
     def test_invalid_locations_and_positions_fail_explicitly(self):
         for location,occurrence in [('unknown',0),('manual_result',1),
                                      ('ai_trace_result',0),('ai_trace_result',-1),
