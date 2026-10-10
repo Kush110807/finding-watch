@@ -4,7 +4,8 @@ import pandas as pd
 from engine import load_csv, run_tool
 from comparisons import execute_comparison
 from presentation import (summary, comparison_summary,comparison_table,metric_choices,
-                          group_candidates,missing_product_context,chart_safe,filter_description)
+                          group_candidates,missing_product_context,chart_safe,filter_description,
+                          simple_group_table,readable_measure,metric_definition)
 
 GOLDEN=b'category,status,revenue\nCoffee,completed,120\nCoffee,completed,90\nCoffee,cancelled,300\nSnacks,completed,180\nSnacks,completed,100\n'
 
@@ -12,21 +13,46 @@ class PresentationTests(unittest.TestCase):
     def setUp(self): self.df=load_csv(GOLDEN)
     def test_golden_conclusion_and_count_definitions(self):
         result=run_tool(self.df,'grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
-        self.assertIn('Coffee',summary(result)); self.assertIn('510',summary(result))
+        self.assertEqual(summary(result),'Coffee leads in total revenue.')
+        self.assertEqual(result['rows'][0]['value'],510)
         count=run_tool(self.df,'grouped_summary',{'group':'category','operation':'count_rows'})
-        self.assertIn('record count (rows)',summary(count).lower())
+        self.assertIn('record count',summary(count).lower())
         self.assertNotIn('orders',summary(count).lower())
+    def test_plain_demo_and_other_schema_without_invented_units(self):
+        demo=load_csv(b'category,revenue\nCoffee,1200\nSnacks,600\nCoffee,1800\nSnacks,800\n')
+        out=run_tool(demo,'grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+        self.assertEqual(summary(out),'Coffee leads in total revenue.')
+        table=simple_group_table(out['rows'],out['evidence']['executed_spec'])
+        self.assertEqual(table,[{'category':'Coffee','Total revenue':'3,000'},
+                                {'category':'Snacks','Total revenue':'1,400'}])
+        self.assertTrue(all(len(row)==2 for row in table))
+        self.assertNotIn('source column',metric_definition(out['evidence']['executed_spec']).lower())
+        unfamiliar=load_csv(b'group,points\nNorth,3\nSouth,7\n')
+        out=run_tool(unfamiliar,'grouped_summary',{'group':'group','metric':'points','operation':'sum'})
+        self.assertEqual(summary(out),'South leads in total points.')
+        self.assertEqual(readable_measure(out['evidence']['executed_spec']),'total points')
+
+    def test_large_integer_null_group_table_is_exact_and_not_mutated(self):
+        df=load_csv(('g,amount\n'+'A,999999999999999\n'*11+'B,\n').encode())
+        result=run_tool(df,'grouped_summary',{'group':'g','metric':'amount','operation':'sum'})
+        before=__import__('json').dumps(result,sort_keys=True)
+        table=simple_group_table(result['rows'],result['evidence']['executed_spec'])
+        self.assertEqual(table,[{'g':'A','Total amount':'10,999,999,999,999,989'},
+                                {'g':'B','Total amount':'No numeric value'}])
+        self.assertEqual(__import__('json').dumps(result,sort_keys=True),before)
+        self.assertFalse(chart_safe(result['rows']))
+
     def test_tied_leaders(self):
         df=load_csv(b'g,amount\nA,10\nB,10\nC,2\n')
         result=run_tool(df,'grouped_summary',{'group':'g','operation':'sum','metric':'amount'})
         self.assertIn('tie',summary(result).lower()); self.assertIn('A',summary(result)); self.assertIn('B',summary(result))
     def test_truncated_disallows_global_rank(self):
         out=run_tool(self.df,'grouped_summary',{'group':'category','operation':'sum','metric':'revenue','display_limit':1})
-        self.assertIn('cannot be confirmed',summary(out))
+        self.assertIn('cannot be established',summary(out))
     def test_missing_value_result(self):
         df=pd.DataFrame({'g':['A','A'],'amount':pd.Series([pd.NA,pd.NA],dtype='Int64')})
         out=run_tool(df,'grouped_summary',{'group':'g','operation':'sum','metric':'amount'})
-        self.assertIn('No numeric group result',summary(out))
+        self.assertIn('No numeric result',summary(out))
     def test_group_absent_vs_zero_vs_missing(self):
         df=load_csv(b'g,keep,value\nA,yes,1\nA,no,4\nB,yes,0\nC,no,\n')
         base={'tool':'grouped_summary','arguments':{'group':'g','metric':'value','operation':'sum'},'filters':[]}

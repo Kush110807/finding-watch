@@ -23,3 +23,8 @@ The first result shows the evidence-derived finding, scope and definition, small
 See [Stage 1 handoff](agentic/docs/STAGE1_HANDOFF.md), which separates deterministic, SDK-mocked, Streamlit AppTest, browser and live-provider evidence. In the candidate build's authoring environment, Streamlit and the Gemini SDK could not be installed because the package host was unreachable; no actual app screenshots are claimed. Perform the Windows suite, upload/clarification/provider checks and real desktop/mobile screenshot review before acceptance.
 
 The full Git history is preserved in the accompanying `stage1-history.bundle`. Restore with `git clone -b main stage1-history.bundle byte-ml-stage1`. No credentials, virtual environments or live verification logs are included in the archive.
+
+
+## Stage 1 presentation cleanup
+
+The app starts with a CSV upload/example, optional suggested questions, and an evidence-first answer. The optional five-tool workbench remains available in the initially collapsed sidebar. The exact JSON evidence and user-confirmed Challenge remain supported. See `agentic/docs/STAGE1_PRESENTATION_CLEANUP.md` for the current independent-review handoff and required Streamlit/browser checks.

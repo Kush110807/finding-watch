@@ -27,7 +27,7 @@ def metric_definition(spec):
     if operation=='count_rows':
         return 'Record count (rows)'
     verbs={'sum':'Total','mean':'Average','min':'Minimum','max':'Maximum'}
-    return f'{verbs.get(operation, operation)} of “{metric}” (source column)'
+    return f'{verbs.get(operation, operation)} of “{metric}”'
 
 
 def filter_description(condition):
@@ -50,12 +50,24 @@ def spec_description(spec):
             'display_limit':spec.get('display_limit')}
 
 
-def summary(output):
-    """Conclusion derived exclusively from returned deterministic tool rows.
+def readable_measure(spec):
+    """Brief metric phrase based only on the executed operation and column name.
 
-    Truncated grouped output cannot establish global leaders: their ordering is
-    not a substitute for full result evidence.
+    No currency or business units are inferred from a column name.
     """
+    args=spec.get('arguments',{})
+    operation=args.get('operation')
+    metric=args.get('metric')
+    if operation=='count_rows':
+        return 'record count'
+    prefix={'sum':'total','mean':'average','min':'minimum','max':'maximum'}.get(operation)
+    if prefix is None or not isinstance(metric,str):
+        return 'calculated value'
+    return f'{prefix} {metric}'
+
+
+def summary(output):
+    """Readable conclusion drawn only from deterministic result evidence."""
     tool=output['tool']; rows=output.get('rows',[])
     evidence=output.get('evidence',{}); account=evidence.get('accounting',{})
     display=evidence.get('display',{})
@@ -65,21 +77,24 @@ def summary(output):
         return f'{account.get("selected_rows",0):,} records match the submitted conditions.'
     if tool=='grouped_summary':
         if display.get('truncated'):
-            return f'{display.get("returned_rows",len(rows)):,} of {display.get("total_result_rows",len(rows)):,} groups displayed. Global leader cannot be confirmed from this preview.'
+            return (f'{display.get("returned_rows",len(rows)):,} of '
+                    f'{display.get("total_result_rows",len(rows)):,} groups shown. '
+                    'A leading group cannot be established from a partial result.')
         valued=[r for r in rows if r.get('value') is not None]
         if not valued:
-            return 'No numeric group result is available; the selected records may contain only missing metric values.'
+            return 'No numeric result is available for the selected groups.'
         highest=max(r['value'] for r in valued)
         leaders=[label(r.get('group_value')) for r in valued if r['value']==highest]
+        measure=readable_measure(evidence.get('executed_spec',{}))
         if len(leaders)>1:
-            return f'{len(leaders)} groups tie for the highest {metric_definition(evidence.get("executed_spec",{})).lower()}: {", ".join(leaders)} ({number(highest)}).'
-        return f'{leaders[0]} has the highest {metric_definition(evidence.get("executed_spec",{})).lower()}: {number(highest)}.'
+            return f'{", ".join(leaders)} tie for the highest {measure}.'
+        return f'{leaders[0]} leads in {measure}.'
     if tool=='time_trend':
         if display.get('truncated'):
-            return f'{len(rows)} time periods displayed; no full-period ranking is claimed.'
+            return f'{len(rows)} time periods shown; the result is incomplete.'
         if not rows or not any(r.get('value') is not None for r in rows):
             return 'No numeric time-period result is available.'
-        return f'{len(rows):,} time periods calculated. Values are shown below without assuming a trend direction.'
+        return f'{len(rows):,} time periods calculated. Compare the values below.'
     if tool=='correlation':
         if rows and rows[0].get('pearson_r') is not None:
             return f'Pearson correlation r = {number(rows[0]["pearson_r"])}. Association does not establish causation.'
@@ -159,6 +174,17 @@ def display_rows(rows):
                 item[key]=str(value)
         rendered.append(item)
     return rendered
+
+
+def simple_group_table(rows, spec):
+    """Two presentation-only columns; detailed counts remain in evidence.
+
+    Formatting happens before a DataFrame can coerce large integers beside null.
+    """
+    group=spec.get('arguments',{}).get('group') or 'Group'
+    measure=readable_measure(spec).capitalize()
+    return [{str(group):record['group_value'],measure:record['value']}
+            for record in display_rows(rows)]
 
 
 def confirmed_comparison_matches(stored, plan, binding):

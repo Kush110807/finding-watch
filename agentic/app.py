@@ -91,7 +91,7 @@ def show_challenge_for_submitted_grouped(df, columns, baseline_output, baseline_
                           download_location=f'{prefix}_comparison')
 
 
-st.set_page_config(page_title='Finding Watch · BYTE',page_icon='📊',layout='centered')
+st.set_page_config(page_title='Finding Watch · BYTE',page_icon='📊',layout='centered',initial_sidebar_state='collapsed')
 st.markdown("""<style>
 :root {color-scheme:light}
 .stApp {background:#FAF9F6;color:#172F44}
@@ -149,8 +149,8 @@ except AnalysisError as exc:
 source_hash=hashlib.sha256(raw).hexdigest()
 cols=list(df.columns); nums=numeric_columns(df)
 st.markdown(f'**{filename}**  ·  {len(df):,} records  ·  {len(cols)} columns')
-st.caption('Dataset version: '+source_hash[:12]+'… · Calculations use the uploaded records, not just the visible preview.')
 with st.expander('Inspect dataset · sample and column information',expanded=False):
+    st.caption('Dataset fingerprint: '+source_hash+' · Calculations use the full dataset, not just the preview.')
     st.dataframe(df.head(30).fillna('Missing').astype(str),hide_index=True,use_container_width=True,height=240)
     if len(df)>30: st.caption('Sample shows 30 records; every calculation uses the full dataset.')
     if st.button('Profile all columns',key='profile_columns'):
@@ -162,22 +162,25 @@ with st.expander('Inspect dataset · sample and column information',expanded=Fal
         evidence_download(profile['output'],'dataset_profile.json',location='stage1_profile')
 
 st.header('What would you like to understand?')
+st.caption('For more precise controls, open the sidebar (top-left) and choose Advanced · five manual analysis tools.')
 suggestions=suggested_questions(cols,nums,df)
 suggestion_map={item['question']:item for item in suggestions}
 if st.session_state.get('stage1_suggestion_dataset')!=source_hash:
     st.session_state['stage1_suggestion_dataset']=source_hash
-    st.session_state['suggested_question']=(suggestions[0]['question'] if suggestions else 'Write my own question')
-    st.session_state['stage1_question']=(suggestions[0]['question'] if suggestions else '')
-# Callbacks execute before widget rendering on a rerun, retaining edits until
-# a NEW suggestion is explicitly selected.
-def choose_suggestion():
-    picked=st.session_state.get('suggested_question','Write my own question')
-    if picked in suggestion_map:
-        st.session_state['stage1_question']=picked
-st.selectbox('Suggested questions based on these columns',
-             list(suggestion_map)+['Write my own question'],
-             key='suggested_question',on_change=choose_suggestion,
-             help='Suggestions have known, validated calculations. Custom questions require Gemini consent.')
+    st.session_state['stage1_question']=''
+    st.session_state['suggested_question']=None
+    st.session_state['stage1_active_suggestion']=None
+with st.expander('Suggested questions · optional',expanded=False):
+    if suggestions:
+        st.caption('Choose an example based on the columns in this CSV. It will fill the question field, not run the analysis.')
+        suggestion_choice=st.selectbox('Choose a suggested question',list(suggestion_map),
+            index=None,placeholder='Choose a question',key='suggested_question')
+        if st.button('Use this question',disabled=suggestion_choice is None,key='stage1_apply_suggestion'):
+            st.session_state['stage1_question']=suggestion_choice
+            st.session_state['stage1_active_suggestion']=suggestion_choice
+            st.rerun()
+    else:
+        st.caption('No safe local question suggestion for these columns. Ask a custom question with Gemini consent, or use the advanced manual tools.')
 with st.expander('Gemini connection and consent · optional',expanded=False):
     st.caption('Suggested questions run locally in Python. For a custom question, Gemini receives column names/types, your question, and relevant bounded tool outputs, which may include matching rows.')
     from agent import AgentError, ask, available_models, configuration
@@ -311,7 +314,7 @@ if submit:
     if not q:
         st.warning('Enter a question, or select one of the suggestions above.')
     else:
-        suggested=suggestion_map.get(q) if st.session_state.get('suggested_question')==q else None
+        suggested=suggestion_map.get(q) if st.session_state.get('stage1_active_suggestion')==q else None
         st.session_state.pop('last_clarified',None)
         st.session_state.pop('last_ai_comparison',None)
         if suggested:
@@ -345,7 +348,7 @@ if st.session_state.get('stage1_provider_error',{}).get('fingerprint')==source_h
     with st.expander('Provider error details'):st.write(st.session_state['stage1_provider_error']['message'])
 local=st.session_state.get('stage1_local_answer')
 if local and local['fingerprint']==source_hash:
-    if local['question']!=question or st.session_state.get('suggested_question')!=local['question']:
+    if local['question']!=question or st.session_state.get('stage1_active_suggestion')!=local['question']:
         st.info('Question edits are pending. The previously calculated result is hidden until you submit again.')
     else:
         analysis_result(local['output'],heading='Your calculated finding',download_location='stage1_local_result')
@@ -548,4 +551,4 @@ if saved:
             location='ai_response')
 
 
-st.caption("All calculations run through the existing five analytical tools. Future saved-data features are not included in this release.")
+

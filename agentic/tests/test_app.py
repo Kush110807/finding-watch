@@ -29,6 +29,13 @@ def _loaded():
     return _field(at,'button','Try an example').click().run()
 
 
+def _select_local_suggestion(at):
+    """Apply a safe suggestion explicitly, without running a calculation."""
+    chooser=_field(at,'selectbox','Choose a suggested question')
+    at=chooser.select(chooser.options[0]).run()
+    return _field(at,'button','Use this question').click().run()
+
+
 def _launch():
     # Legacy tests use the optional manual workbench. New Stage 1 tests call _loaded().
     at=_loaded()
@@ -437,6 +444,21 @@ class DuplicateDownloadAppTests(unittest.TestCase):
 class Stage1JourneyAppTests(unittest.TestCase):
     """Real Streamlit AppTests, not SDK shims or live-provider checks."""
 
+    def test_suggested_question_requires_selection_then_apply_then_analyse(self):
+        at=_loaded()
+        self.assertEqual(_field(at,'text_input','Your question').value,'')
+        chooser=_field(at,'selectbox','Choose a suggested question')
+        self.assertIsNone(chooser.value)
+        chooser.select(chooser.options[0]).run()
+        self.assertEqual(_field(at,'text_input','Your question').value,'')
+        self.assertNotIn('stage1_local_answer',at.session_state)
+        at=_field(at,'button','Use this question').click().run()
+        self.assertEqual(_field(at,'text_input','Your question').value,chooser.options[0])
+        self.assertNotIn('stage1_local_answer',at.session_state)
+        _field(at,'button','Analyse').click().run()
+        self.assertEqual(at.session_state['stage1_local_answer']['output']['rows'][0]['value'],3000)
+        self.assertFalse(at.exception,str(at.exception))
+
     def test_entry_has_no_dataset_until_explicit_action(self):
         at=_fresh()
         self.assertFalse(at.exception)
@@ -448,6 +470,8 @@ class Stage1JourneyAppTests(unittest.TestCase):
         at=_loaded()
         self.assertFalse(at.exception)
         self.assertTrue(any('demo_sales.csv' in str(x.value) for x in at.markdown))
+        at=_select_local_suggestion(at)
+        self.assertNotIn('stage1_local_answer',at.session_state)
         _field(at,'button','Analyse').click().run()
         self.assertFalse(at.exception,str(at.exception))
         finding=at.session_state['stage1_local_answer']['output']
@@ -455,11 +479,12 @@ class Stage1JourneyAppTests(unittest.TestCase):
         self.assertEqual(finding['evidence']['accounting']['excluded_by_filters'],0)
         self.assertEqual([(r['group_value'],r['value']) for r in finding['rows']],
                          [('Coffee',3000),('Snacks',1400)])
-        self.assertTrue(any('Coffee' in m.value and '3,000' in m.value for m in at.markdown))
+        self.assertTrue(any('Coffee leads in total revenue' in m.value for m in at.markdown))
+        self.assertTrue(any('3,000' in frame.value.to_string() for frame in at.dataframe))
         self.assertTrue(any('How this was calculated'==x.label for x in at.get('expander')))
 
     def test_question_edit_hides_submitted_result(self):
-        at=_loaded()
+        at=_select_local_suggestion(_loaded())
         _field(at,'button','Analyse').click().run()
         _field(at,'text_input','Your question').input('Another question').run()
         self.assertFalse(at.exception)
@@ -482,7 +507,8 @@ class Stage1JourneyAppTests(unittest.TestCase):
         self.assertFalse(at.exception,str(at.exception))
         self.assertEqual(at.session_state['last_visible_ai_trace_index'],2)
         self.assertTrue(any('Calculated finding' in h.value for h in at.subheader))
-        self.assertTrue(any('Coffee' in m.value and '3,000' in m.value for m in at.markdown))
+        self.assertTrue(any('Coffee leads in total revenue' in m.value for m in at.markdown))
+        self.assertTrue(any('3,000' in frame.value.to_string() for frame in at.dataframe))
 
     def test_provider_failure_preserves_question_and_exposes_recovery(self):
         from agent import AgentError
@@ -521,7 +547,7 @@ class Stage1DownloadLocationAppTests(unittest.TestCase):
         return at
 
     def test_profile_download_and_local_suggested_result_coexist(self):
-        at=_loaded()
+        at=_select_local_suggestion(_loaded())
         _field(at,'button','Profile all columns').click().run()
         self.assertFalse(at.exception,str(at.exception))
         self.assertEqual(at.session_state['stage1_profile']['output']['tool'],'inspect_dataset')
@@ -534,7 +560,7 @@ class Stage1DownloadLocationAppTests(unittest.TestCase):
                          [('Coffee',3000),('Snacks',1400)])
 
     def test_local_challenge_confirmation_renders_its_own_download(self):
-        at=_loaded()
+        at=_select_local_suggestion(_loaded())
         _field(at,'button','Analyse').click().run()
         self.assertFalse(at.exception,str(at.exception))
         _field(at,'selectbox','Challenged filter column').select('category').run()
