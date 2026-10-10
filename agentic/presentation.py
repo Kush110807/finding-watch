@@ -127,8 +127,9 @@ def visible_result_rows(output, cap=12):
     if tool=='grouped_summary':
         return simple_group_table(rows,spec)
     if tool=='time_trend':
-        return [{'Period':observed_period_label(row.get('period_start'),args.get('frequency')),
-                 metric_definition(spec):number(row.get('value'))} for row in rows]
+        columns=unique_presentation_columns([('period_start','Period'),('value',metric_definition(spec))])
+        return [{columns['period_start']:observed_period_label(row.get('period_start'),args.get('frequency')),
+                 columns['value']:number(row.get('value'))} for row in rows]
     if tool=='correlation':
         return [{'First column':str(row.get('x')),'Second column':str(row.get('y')),
                  'Pearson correlation (r)':number(row.get('pearson_r'))} for row in rows]
@@ -240,15 +241,70 @@ def display_rows(rows):
     return rendered
 
 
-def simple_group_table(rows, spec):
-    """Two presentation-only columns; detailed counts remain in evidence.
+def unique_presentation_columns(columns):
+    """Map distinct evidence fields to distinct UI labels, even when names collide.
 
-    Formatting happens before a DataFrame can coerce large integers beside null.
+    The last (usually calculated) field keeps its natural label. Earlier fields
+    receive role-qualified labels where needed. This operates only on the UI;
+    original result keys and their JSON representation are never modified.
     """
+    roles={'group_value':'group', 'period_start':'period', 'value':'calculated value',
+           'row_count':'record count', 'non_missing_metric_count':'numeric count'}
+    used=set()
+    resolved={}
+    for field,title in reversed(columns):
+        candidate=str(title)
+        if candidate in used:
+            candidate=f'{candidate} ({roles.get(field, field.replace("_", " "))})'
+        base=candidate
+        index=2
+        while candidate in used:
+            candidate=f'{base} ({index})'
+            index+=1
+        used.add(candidate)
+        resolved[field]=candidate
+    return resolved
+
+
+def group_column_labels(spec, *, detailed=False):
+    """Human-readable, collision-safe grouped-result column headings."""
     group=spec.get('arguments',{}).get('group') or 'Group'
-    measure=readable_measure(spec).capitalize()
-    return [{str(group):record['group_value'],measure:record['value']}
-            for record in display_rows(rows)]
+    columns=[('group_value',str(group)),('value',readable_measure(spec).capitalize())]
+    if detailed:
+        columns.extend([('row_count','Records in group'),
+                        ('non_missing_metric_count','Records with numeric values')])
+    return unique_presentation_columns(columns)
+
+
+def simple_group_table(rows, spec):
+    """Precisely formatted grouped values with two distinct display headings."""
+    headings=group_column_labels(spec)
+    return [{headings['group_value']:record['group_value'],
+             headings['value']:record['value']} for record in display_rows(rows)]
+
+
+def detailed_group_table(rows, spec):
+    """Detailed accounting, formatted before pandas inference or column renaming."""
+    rendered=display_rows(rows)
+    keys=list(dict.fromkeys(key for row in rendered for key in row))
+    labels=group_column_labels(spec,detailed=True)
+    for key in keys:
+        if key not in labels:
+            labels[key]=key
+    unique=unique_presentation_columns([(key,labels[key]) for key in keys])
+    return [{unique[key]:row.get(key,'Missing') for key in keys} for row in rendered]
+
+
+def preview_counts(output, *, cap=12):
+    """Count matching, engine-returned and UI-visible rows separately.
+
+    A result may be truncated once by the engine and again by the interface.
+    These counts never depend on rows omitted from the engine response.
+    """
+    evidence=output.get('evidence',{})
+    matches=evidence.get('accounting',{}).get('selected_rows',0)
+    returned=len(output.get('rows',[]))
+    return {'matched':matches,'returned':returned,'visible':min(returned,cap)}
 
 
 def confirmed_comparison_matches(stored, plan, binding):

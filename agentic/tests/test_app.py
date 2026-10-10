@@ -266,7 +266,12 @@ class P1P3UiAppTests(unittest.TestCase):
         with patch('agent.ask',return_value=self.mocked_answer('error','Quota unavailable.')):
             at=self.submit_question(_launch(),'What is the top category?')
             self.assertFalse(at.exception)
-            self.assertTrue(any('did not complete' in str(e.value).lower() for e in at.error))
+            errors=[str(e.value).lower() for e in at.error]
+            self.assertTrue(any('gemini could not complete this request' in e for e in errors))
+            self.assertTrue(any('retry analyse' in e and 'connection settings' in e
+                                and 'local suggested questions' in e for e in errors))
+            self.assertEqual(at.session_state['stage1_question'],'What is the top category?')
+            self.assertFalse(any(h.value=='Calculated finding' for h in at.subheader))
 
     def test_streamlit_result_table_uses_exact_large_integer_evidence(self):
         raw=b'g,amount\n'+b'A,999999999999999\n'*11+b'B,\n'
@@ -654,6 +659,33 @@ class Stage2AppTests(unittest.TestCase):
         self.assertFalse(at.exception)
         self.assertTrue(any('2 records match' in m.value for m in at.markdown))
         self.assertTrue(any('matching records are shown' in w.value.lower() for w in at.warning))
+
+    def test_colliding_group_column_headings_preserve_both_values(self):
+        df=load_csv(b'Total revenue,revenue\nCoffee,10\nSnacks,5\n')
+        out=run_tool(df,'grouped_summary',
+                     {'group':'Total revenue','metric':'revenue','operation':'sum'})
+        at=self.ask_screen(self.response(out),'Group by Total revenue and sum revenue')
+        self.assertFalse(at.exception)
+        self.assertTrue(any('Total revenue (group)' in f.value.columns
+                            and 'Total revenue' in f.value.columns
+                            and list(f.value['Total revenue (group)'])==['Coffee','Snacks']
+                            for f in at.dataframe))
+        self.assertTrue(any(b.label=='Download original result JSON' for b in at.button))
+
+    def test_filtered_preview_counts_actual_visible_rows(self):
+        df=load_csv(b'key,segment\n'+b'0001,A\n'*13+b'0002,B\n')
+        for limit,returned,visible in [(100,13,12),(5,5,5)]:
+            with self.subTest(engine_limit=limit):
+                out=run_tool(df,'filter_rows',
+                             {'field':'segment','operator':'eq','value':'A','limit':limit})
+                at=self.ask_screen(self.response(out),'Show matching records')
+                self.assertFalse(at.exception)
+                self.assertTrue(any('Matching records:** 13' in c.value
+                                    and f'Returned:** {returned}' in c.value
+                                    and f'Shown in table:** {visible}' in c.value
+                                    for c in at.caption))
+                self.assertTrue(any(len(f.value)==visible for f in at.dataframe))
+                self.assertTrue(any(b.label=='Download original result JSON' for b in at.button))
 
     def test_group_time_correlation_readable_results(self):
         cases=[('grouped_summary',{'group':'category','operation':'sum','metric':'revenue'},'Coffee leads'),

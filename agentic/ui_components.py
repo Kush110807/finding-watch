@@ -5,7 +5,7 @@ import streamlit as st
 from download_keys import evidence_key
 from stage1_logic import two_group_difference
 from presentation import (summary, comparison_summary, comparison_table, label, number,
-                          metric_definition, spec_description, filter_description,chart_safe,display_rows,readable_measure,simple_group_table,visible_result_rows,important_notices,observed_period_label)
+                          metric_definition, spec_description, filter_description,chart_safe,display_rows,readable_measure,simple_group_table,visible_result_rows,important_notices,observed_period_label,detailed_group_table,preview_counts)
 
 
 def evidence_download(data, filename, caption='Download complete, unmodified calculation evidence', *,
@@ -78,8 +78,10 @@ def analysis_result(output, *, heading='Calculated result', model_tool=False, qu
         st.caption(f'**Columns:** {args.get("x")} and {args.get("y")} · '
                    f'**Complete pairs:** {account.get("operation_exclusions",{}).get("complete_pairs",0):,}')
     elif tool=='filter_rows':
-        st.caption(f'**Matching records:** {account.get("selected_rows",0):,} · '
-                   f'**Displayed:** {len(rows):,} of {display.get("total_result_rows",len(rows)):,}')
+        counts=preview_counts(output,cap=12)
+        st.caption(f'**Matching records:** {counts["matched"]:,} · '
+                   f'**Returned:** {counts["returned"]:,} · '
+                   f'**Shown in table:** {counts["visible"]:,}')
     elif tool=='inspect_dataset':
         meta=output.get('metadata',{})
         missing=sum(int(row.get('missing',0)) for row in rows)
@@ -132,11 +134,8 @@ def analysis_result(output, *, heading='Calculated result', model_tool=False, qu
         accounting(ev)
         if tool=='grouped_summary' and rows:
             st.caption('Detailed group accounting, including record counts and missing numeric values:')
-            st.dataframe(pd.DataFrame(display_rows(rows[:12]),dtype=str).rename(columns={
-                'group_value':str(info['group']) if info['group'] is not None else 'Group',
-                'value':readable_measure(spec).capitalize(),
-                'row_count':'Records in group',
-                'non_missing_metric_count':'Records with numeric values'}),hide_index=True,use_container_width=True)
+            st.dataframe(pd.DataFrame(detailed_group_table(rows[:12],spec),dtype=str),
+                         hide_index=True,use_container_width=True)
         st.json(ev)
         st.json(output.get('metadata',{}))
         evidence_download(output,'analysis_result.json','Download original result JSON',
