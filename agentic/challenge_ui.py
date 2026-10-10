@@ -5,7 +5,7 @@ import streamlit as st
 from engine import AnalysisError
 from comparisons import prepare_comparison, execute_comparison
 from challenge_logic import (identity, column_operators, categorical_values, parse_numeric,
-                             changed_filters, FRIENDLY_OPERATORS, definition_line, unchanged_line)
+                             changed_filters, parse_contains_text, FRIENDLY_OPERATORS, definition_line, unchanged_line)
 from presentation import filter_description, confirmed_comparison_matches
 from ui_components import comparison_result
 
@@ -25,6 +25,15 @@ def _condition_editor(df, prefix):
     condition={'field':field,'operator':operator}
     if operator in ('is_missing','not_missing'):
         st.caption('Missing means an empty CSV cell. An empty text value is different.')
+        return condition
+    # Contains is a substring operation, not a choice of existing whole cells.
+    # Empty/blank input stays incomplete; no plan or calculation can be created.
+    if operator=='contains':
+        text=st.text_input('Text to find',placeholder='Enter part of the text',
+                          key=prefix+'_contains_value_'+identity({'field':field,'operator':operator}))
+        if not text.strip():
+            return None
+        condition['value']=parse_contains_text(text)
         return condition
     values=categorical_values(df,field)
     if values is not None:

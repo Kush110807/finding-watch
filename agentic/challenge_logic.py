@@ -8,7 +8,7 @@ import math
 import re
 from pandas.api.types import is_numeric_dtype, is_bool_dtype
 from engine import AnalysisError
-from presentation import filter_description, metric_definition, label, number
+from presentation import filter_description, metric_definition, label, number, unique_presentation_columns
 
 FRIENDLY_OPERATORS = {'eq':'is', 'ne':'is not', 'gt':'is greater than',
                       'ge':'is at least', 'lt':'is less than', 'le':'is at most',
@@ -65,6 +65,18 @@ def parse_numeric(text):
     return value
 
 
+def parse_contains_text(value):
+    """An explicit non-empty substring; never accept an implicit match-all value.
+
+    Preserve the entered text exactly (including meaningful surrounding spaces).
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise AnalysisError('Enter some text to find before reviewing the comparison.')
+    if len(value) > 256:
+        raise AnalysisError('Text conditions cannot exceed 256 characters.')
+    return value
+
+
 def changed_filters(original, action, *, index=None, condition=None):
     """Construct exactly one declared add, remove, or replace operation."""
     existing=[dict(f) for f in original]
@@ -116,9 +128,12 @@ def conclusion(result):
 def comparison_display_rows(result):
     """Format exact scalars BEFORE DataFrame inference; distinguish absent/null/zero."""
     group=str(result['baseline_spec']['arguments']['group']).replace('_',' ').capitalize()
-    return [{group:label(r['group_value']),
-             'Original':number(r['baseline_value']) if r['baseline_present'] else 'Absent group',
-             'Alternative':number(r['challenged_value']) if r['challenged_present'] else 'Absent group',
-             'Difference':number(r['difference_challenged_minus_baseline'])
+    headings=unique_presentation_columns([
+        ('group_value',group),('baseline_value','Original'),
+        ('challenged_value','Alternative'),('difference','Difference')])
+    return [{headings['group_value']:label(r['group_value']),
+             headings['baseline_value']:number(r['baseline_value']) if r['baseline_present'] else 'Absent group',
+             headings['challenged_value']:number(r['challenged_value']) if r['challenged_present'] else 'Absent group',
+             headings['difference']:number(r['difference_challenged_minus_baseline'])
                 if r['difference_challenged_minus_baseline'] is not None else 'Not comparable'}
             for r in result['comparison']['displayed_results']]

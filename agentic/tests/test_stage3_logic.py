@@ -4,7 +4,7 @@ import unittest
 from engine import load_csv, AnalysisError
 from comparisons import prepare_comparison, execute_comparison
 from challenge_logic import (identity,changed_filters,column_operators,categorical_values,
-                             parse_numeric,conclusion,comparison_display_rows,definition_line,unchanged_line)
+                             parse_numeric,parse_contains_text,conclusion,comparison_display_rows,definition_line,unchanged_line)
 
 GOLDEN=b'category,status,revenue\nCoffee,completed,120\nCoffee,completed,90\nCoffee,cancelled,300\nSnacks,completed,180\nSnacks,completed,100\n'
 
@@ -119,6 +119,59 @@ class ChallengeStateTests(unittest.TestCase):
         self.assertEqual(len(comparison_display_rows(result)),3)
         self.assertTrue(conclusion(result))
         self.assertEqual(json.dumps(result,sort_keys=True,ensure_ascii=False,allow_nan=False),baseline)
+
+    def test_collision_safe_comparison_headings_keep_exact_groups_and_json(self):
+        import json
+        # Group columns named original/alternative/difference previously
+        # overwrote the group values with the corresponding numeric heading.
+        for group in ('original','alternative','difference'):
+            with self.subTest(group=group):
+                raw=(f'{group},region,amount\n'.encode()
+                     +b'Coffee,North East,999999999999999\n'*11
+                     +b'Snacks,South,5\nZero,North West,0\nMissing,North West,\n')
+                df=load_csv(raw)
+                base=spec(group=group,metric='amount')
+                alternative=spec([{'field':'region','operator':'contains','value':'North'}],
+                                 group=group,metric='amount')
+                result=execute_comparison(df,base,alternative)
+                original=json.dumps(result,sort_keys=True,ensure_ascii=False,allow_nan=False)
+                rows=comparison_display_rows(result)
+                self.assertEqual(len(rows),4)
+                headings=list(rows[0])
+                self.assertEqual(len(headings),len(set(headings)))
+                self.assertEqual(headings[0],group.capitalize()+' (group)')
+                self.assertEqual(headings[1:],['Original','Alternative','Difference'])
+                by_group={row[headings[0]]:row for row in rows}
+                self.assertEqual(set(by_group),{'Coffee','Snacks','Zero','Missing'})
+                self.assertEqual(by_group['Coffee']['Original'],'10,999,999,999,999,989')
+                self.assertEqual(by_group['Coffee']['Alternative'],'10,999,999,999,999,989')
+                self.assertEqual(by_group['Coffee']['Difference'],'0')
+                self.assertEqual(by_group['Snacks']['Alternative'],'Absent group')
+                self.assertEqual(by_group['Zero']['Alternative'],'0')
+                self.assertEqual(by_group['Missing']['Alternative'],'No numeric value')
+                self.assertEqual(json.dumps(result,sort_keys=True,ensure_ascii=False,allow_nan=False),original)
+
+    def test_contains_text_requires_explicit_substring_and_matches_full_rows(self):
+        df=load_csv(b'g,region,amount\nA,North East,5\nA,North West,7\nB,South,4\n')
+        base=spec(group='g',metric='amount')
+        for invalid in ('', ' ', '\t', None, 123, 'x'*257):
+            with self.subTest(invalid=repr(invalid)):
+                with self.assertRaises(AnalysisError):
+                    parse_contains_text(invalid)
+        self.assertEqual(parse_contains_text('North'),'North')
+        self.assertEqual(parse_contains_text(' North '),' North ')
+        condition={'field':'region','operator':'contains','value':parse_contains_text('North')}
+        alt=spec(changed_filters([], 'Add condition',condition=condition),group='g',metric='amount')
+        plan=prepare_comparison(df,base,alt)
+        self.assertEqual(plan['changed_condition']['kind'],'added')
+        result=execute_comparison(df,base,alt)
+        self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
+        a=next(row for row in result['comparison']['all_results'] if row['group_value']=='A')
+        self.assertEqual((a['baseline_value'],a['challenged_value']),(12,12))
+        # Whole-value equality remains distinct: neither matching region equals North.
+        only_exact=spec([{'field':'region','operator':'eq','value':'North'}],group='g',metric='amount')
+        with self.assertRaisesRegex(AnalysisError,'[Nn]o rows'):
+            execute_comparison(df,base,only_exact)
 
     def test_tie_and_empty_selection(self):
         df=load_csv(b'g,region,amount\nA,North,5\nB,North,5\nA,South,1\n')

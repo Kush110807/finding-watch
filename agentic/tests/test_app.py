@@ -929,3 +929,55 @@ class Stage3ChallengeAppTests(unittest.TestCase):
             _assert_download(at,'ai_selected_comparison','Download comparison JSON')
             _field(at,'selectbox','Which calculated result would you like to see?').select_index(0).run()
             self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
+
+class Stage3ContainsTextAppTests(unittest.TestCase):
+    """Actual Streamlit AppTests (requires installed Streamlit and Gemini SDK)."""
+
+    def _open_contains(self):
+        at=_select_local_suggestion(_loaded())
+        _field(at,'button','Analyse').click().run()
+        _field(at,'button','Test another condition').click().run()
+        _field(at,'selectbox','What would you like to change?').select('Add condition').run()
+        _field(at,'selectbox','Column').select('region').run()
+        _field(at,'selectbox','Condition').select('contains').run()
+        return at
+
+    def test_contains_uses_explicit_substring_and_requires_review_confirmation(self):
+        at=self._open_contains()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertFalse(any(s.label=='Value' for s in at.selectbox))
+        self.assertEqual(_field(at,'text_input','Text to find').value,'')
+        self.assertTrue(_field(at,'button','Review comparison').disabled)
+        self.assertNotIn('s3_suggested_review',at.session_state)
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        _field(at,'text_input','Text to find').input('   ').run()
+        self.assertTrue(_field(at,'button','Review comparison').disabled)
+        self.assertNotIn('s3_suggested_review',at.session_state)
+        _field(at,'text_input','Text to find').input('Nor').run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertNotIn('s3_suggested_review',at.session_state)
+        _field(at,'button','Review comparison').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        plan=at.session_state['s3_suggested_review']['plan']
+        self.assertEqual(plan['challenged_spec']['filters'],[
+            {'field':'region','operator':'contains','value':'Nor'}])
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        _field(at,'button','Confirm and compare').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        result=at.session_state['last_suggested_comparison']['result']
+        self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
+        _assert_download(at,'suggested_comparison','Download comparison JSON')
+        _field(at,'text_input','Text to find').input('Sou').run()
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
+
+    def test_equality_keeps_existing_value_choice(self):
+        at=_select_local_suggestion(_loaded())
+        _field(at,'button','Analyse').click().run()
+        _field(at,'button','Test another condition').click().run()
+        _field(at,'selectbox','What would you like to change?').select('Add condition').run()
+        _field(at,'selectbox','Column').select('region').run()
+        _field(at,'selectbox','Condition').select('eq').run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertIsNotNone(_field(at,'selectbox','Value'))
+        self.assertFalse(any(i.label=='Text to find' for i in at.text_input))
