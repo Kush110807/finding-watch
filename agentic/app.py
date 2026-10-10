@@ -76,8 +76,9 @@ def show_challenge_for_submitted_grouped(df, columns, baseline_output, baseline_
                     expected_fingerprint=plan['dataset_fingerprint_sha256'])
                 st.session_state[store_key]={
                     'plan':plan,'baseline_binding':baseline_binding,'result':result}
-                active=True
-                status_notice.success('CONFIRMED — comparison calculated from both exact definitions.')
+                # Rerun before drawing headings/definitions: the expander's
+                # earlier pending label must not survive this confirmation.
+                st.rerun()
             except AnalysisError as exc:
                 st.error('Comparison could not be completed: '+str(exc))
     # Outside the Challenge expander: confirmed result remains easy to find,
@@ -85,7 +86,8 @@ def show_challenge_for_submitted_grouped(df, columns, baseline_output, baseline_
     record=st.session_state.get(store_key)
     if confirmed_comparison_matches(record,plan,baseline_binding):
         comparison_result(record['result'],heading='User-confirmed Challenge',
-                          filename=f'{prefix}_comparison.json')
+                          filename=f'{prefix}_comparison.json',
+                          download_location=f'{prefix}_comparison')
 
 st.set_page_config(page_title='Finding Watch · BYTE',page_icon='📊',layout='wide')
 st.markdown("""<style>
@@ -187,7 +189,8 @@ if saved_manual:
     if not manual_current:
         st.warning('Pending edits: the previous result is hidden. Click Run analysis to submit the new settings. Old calculations have not changed.')
     else:
-        analysis_result(saved_manual['output'],heading='Submitted calculation')
+        analysis_result(saved_manual['output'],heading='Submitted calculation',
+                        download_location='manual_result')
 # M2 Challenge always binds to the specific submitted output, not controls.
 if (manual_current and saved_manual['output']['tool']=='grouped_summary'):
     show_challenge_for_submitted_grouped(df,cols,saved_manual['output'],
@@ -315,7 +318,8 @@ if saved:
                     if selected['metric'] is not None:current_definition['metric']=selected['metric']
                 if current_definition==clarified['chosen']:
                     analysis_result(clarified['output'],
-                        heading='Calculated from your explicit definition',question=submitted)
+                        heading='Calculated from your explicit definition',question=submitted,
+                        download_location='clarified_result')
                     if clarified['output']['tool']=='grouped_summary':
                         show_challenge_for_submitted_grouped(df,cols,clarified['output'],
                             {'kind':'clarified','dataset':source_hash,'question':submitted,
@@ -367,7 +371,8 @@ if saved:
     for i,event in enumerate(answer.get('trace',[]) if not changed_question else [],1):
         result=event.get('result',{})
         if ('rows' in result and result.get('evidence',{}).get('calculation_status')=='completed'):
-            analysis_result(result,heading=f'Calculation {i} · {event["tool"]}',model_tool=True,question=submitted)
+            analysis_result(result,heading=f'Calculation {i} · {event["tool"]}',model_tool=True,question=submitted,
+                            download_location='ai_trace_result',download_occurrence=i)
         elif result.get('error'):
             st.error('Tool could not complete: '+str(result['error']))
     if not changed_question and status=='evidence_available' and answer.get('answer'):
@@ -410,7 +415,8 @@ if saved:
                 st.error(str(exc))
         confirmed=st.session_state.get('last_ai_comparison')
         if ai_confirmed and confirmed:
-            comparison_result(confirmed['result'],heading='User-confirmed comparison',filename='confirmed_comparison.json')
+            comparison_result(confirmed['result'],heading='User-confirmed comparison',
+                              filename='confirmed_comparison.json',download_location='ai_comparison')
     with st.expander('How this response was produced'):
         st.caption('Original question, model status and tool trace. Tool results do not prove a model interpretation is correct.')
         st.json({'question':submitted,'model_proposal_status_at_creation' if status=='comparison_pending' else 'model_status':status,
@@ -420,7 +426,8 @@ if saved:
                  'user_clarification_context':saved.get('clarification_context'),
                  'explicit_baseline_reference':saved.get('baseline_reference')})
     evidence_download(answer,'ai_analysis.json',
-        'Download original Gemini proposal JSON' if status=='comparison_pending' else 'Download AI analysis evidence')
+        'Download original Gemini proposal JSON' if status=='comparison_pending' else 'Download AI analysis evidence',
+        location='ai_response')
 
 st.divider()
 st.caption('Saved Findings · planned for a later milestone. Nothing is stored or revisited in this version.')

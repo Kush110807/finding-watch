@@ -140,6 +140,8 @@ class M2ChallengeAppTests(unittest.TestCase):
         self.assertEqual(result['status'],'completed')
         self.assertFalse(any('not calculated or approved' in str(w.value).lower() for w in at.warning))
         self.assertTrue(any('confirmed' in str(x.value).lower() for x in at.success))
+        self.assertTrue(any('Challenge · confirmed' in str(x.value) for x in at.markdown))
+        self.assertFalse(any('Challenge · pending' in str(x.value) for x in at.markdown))
         self.assertEqual(result['accounting']['baseline']['selected_rows'],4)
         self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
         self.widget(at,'text_input','Challenged filter value').input('Snacks').run()
@@ -289,6 +291,8 @@ class P1P3UiAppTests(unittest.TestCase):
             self.assertEqual(entry['baseline_binding']['kind'],'clarified')
             self.assertEqual(entry['result']['baseline_spec']['arguments']['metric'],'units')
             self.assertEqual(entry['result']['status'],'completed')
+            self.assertTrue(any('Challenge · confirmed' in str(x.value) for x in at.markdown))
+            self.assertFalse(any('Challenge · pending' in str(x.value) for x in at.markdown))
             self.field(at,'text_input','Challenged filter value').input('South').run()
             self.assertFalse(at.exception)
             self.assertFalse(any('Download comparison JSON'==b.label for b in at.button))
@@ -316,6 +320,97 @@ class P1P3UiAppTests(unittest.TestCase):
         self.assertNotIn('saved_findings',at.session_state)
         self.assertTrue(any('Saved Findings' in str(c.value) and 'planned' in str(c.value)
                             for c in at.get('caption')))
+
+
+
+class DuplicateDownloadAppTests(unittest.TestCase):
+    """Real Streamlit AppTest checks; AI calls are patched, never live requests.
+
+    Both result visibility and absence of StreamlitDuplicateElementId are
+    mandatory. These cases previously crashed during the full render.
+    """
+    @staticmethod
+    def field(at, collection, label):
+        return next(item for item in getattr(at,collection) if item.label==label)
+
+    def submit(self, at, response, question='Show results'):
+        with patch('agent.ask',return_value=response):
+            self.field(at,'checkbox','Use Gemini for this question: send the question, column names/types and analysis results (which may include matching rows).').check().run()
+            self.field(at,'text_input','Question').input(question).run()
+            self.field(at,'button','Ask Gemini').click().run()
+        self.assertFalse(at.exception, str(at.exception))
+        return at
+
+    @staticmethod
+    def response(trace):
+        return {'status':'evidence_available','answer':'Unverified model explanation',
+                'trace':trace,'calculation_verified':True,'explanation_verified':False}
+
+    @staticmethod
+    def event(tool, output):
+        return {'tool':tool,'arguments':output['evidence']['executed_spec']['arguments'],
+                'result':output}
+
+    def test_manual_result_and_identical_ai_result_have_independent_download_widgets(self):
+        at=_launch()
+        self.field(at,'selectbox','Analysis tool').select('Summarise groups').run()
+        self.field(at,'selectbox','Group by').select('category').run()
+        self.field(at,'button','Run analysis').click().run()
+        self.assertFalse(at.exception, str(at.exception))
+        manual=at.session_state['last_manual']['output']
+        self.assertEqual(manual['tool'],'grouped_summary')
+        self.submit(at,self.response([self.event('grouped_summary',manual)]),
+                    'Which category has the largest count?')
+        self.assertEqual(at.session_state['last_manual']['output'],
+                         at.session_state['last_answer']['response']['trace'][0]['result'])
+        headings=[x.value for x in at.subheader]
+        self.assertTrue(any('Submitted calculation' in h for h in headings))
+        self.assertTrue(any('Calculation 1' in h for h in headings))
+        self.assertGreaterEqual(len(at.dataframe),3)  # source preview, manual, AI
+        self.assertFalse(at.exception, str(at.exception))
+
+    def test_two_identical_analytical_results_in_one_ai_trace_remain_visible(self):
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        output=run_tool(df,'grouped_summary',{'group':'category','operation':'count_rows'})
+        event=self.event('grouped_summary',output)
+        at=self.submit(_launch(),self.response([event,event]),'Show each tool call')
+        self.assertEqual(len(at.session_state['last_answer']['response']['trace']),2)
+        self.assertGreaterEqual(len(at.dataframe),3)
+        headings=[x.value for x in at.subheader]
+        self.assertTrue(any('Calculation 1' in h for h in headings))
+        self.assertTrue(any('Calculation 2' in h for h in headings))
+        self.assertFalse(at.exception, str(at.exception))
+
+    def test_unmodified_evidence_download_payload_and_explicit_key(self):
+        from ui_components import evidence_download
+        import json
+        content={'rows':[{'group_value':'A','value':10999999999999989},
+                         {'group_value':'B','value':None}],
+                 'evidence':{'calculation_status':'completed'}}
+        unchanged=json.dumps(content,sort_keys=True)
+        with patch('ui_components.st.download_button') as widget:
+            evidence_download(content,'analysis_result.json','Download result JSON',
+                              location='ai_trace_result',occurrence=2)
+        self.assertEqual(json.loads(widget.call_args.args[1]),content)
+        self.assertEqual(json.dumps(content,sort_keys=True),unchanged)
+        self.assertEqual(widget.call_args.kwargs['key'],
+                         'finding_watch:evidence:ai_trace_result:2')
+        self.assertEqual(widget.call_args.args[3],'application/json')
+
+    def test_inspection_followed_by_grouped_aggregation_retains_both_results(self):
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        inspected=run_tool(df,'inspect_dataset',{})
+        grouped=run_tool(df,'grouped_summary',{'group':'category','operation':'count_rows'})
+        at=self.submit(_launch(),self.response([
+            self.event('inspect_dataset',inspected),
+            self.event('grouped_summary',grouped)]),'Profile then group records')
+        tools=[x['tool'] for x in at.session_state['last_answer']['response']['trace']]
+        self.assertEqual(tools,['inspect_dataset','grouped_summary'])
+        self.assertGreaterEqual(len(at.dataframe),3)
+        headings=[x.value for x in at.subheader]
+        self.assertTrue(any('Calculation 1' in h and 'inspect_dataset' in h for h in headings))
+        self.assertTrue(any('Calculation 2' in h and 'grouped_summary' in h for h in headings))
+        self.assertFalse(at.exception, str(at.exception))
 
 if __name__ == "__main__":
     unittest.main()

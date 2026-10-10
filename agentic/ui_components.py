@@ -2,13 +2,20 @@
 import json
 import pandas as pd
 import streamlit as st
+from download_keys import evidence_key
 from presentation import (summary, comparison_summary, comparison_table, label, number,
                           metric_definition, spec_description, filter_description,chart_safe,display_rows)
 
 
-def evidence_download(data,filename,caption='Download complete, unmodified calculation evidence'):
+def evidence_download(data, filename, caption='Download complete, unmodified calculation evidence', *,
+                      location, occurrence=0):
+    """Download the original evidence without changing its JSON payload.
+
+    Explicit widget identity is based on where a result is rendered, *not*
+    its content. This is important for repeat calls returning equal results.
+    """
     st.download_button(caption,json.dumps(data,indent=2,allow_nan=False,ensure_ascii=False),
-                       filename,'application/json')
+                       filename,'application/json',key=evidence_key(location,occurrence))
 
 
 def source_definition(spec, title='Submitted definition'):
@@ -47,7 +54,8 @@ def accounting(evidence):
         st.caption('Note: '+warning)
 
 
-def analysis_result(output, *, heading='Calculated result', model_tool=False, question=None):
+def analysis_result(output, *, heading='Calculated result', model_tool=False, question=None,
+                    download_location, download_occurrence=0):
     st.subheader(heading)
     if question:
         st.caption('Submitted question: '+question)
@@ -80,10 +88,12 @@ def analysis_result(output, *, heading='Calculated result', model_tool=False, qu
     with st.expander('How this was calculated'):
         st.json(ev)
         st.json(output.get('metadata',{}))
-    evidence_download(output,'analysis_result.json','Download result JSON')
+    evidence_download(output,'analysis_result.json','Download result JSON',
+                      location=download_location, occurrence=download_occurrence)
 
 
-def comparison_result(result, *, heading='Confirmed comparison', filename='comparison.json'):
+def comparison_result(result, *, heading='Confirmed comparison', filename='comparison.json',
+                      download_location):
     st.subheader(heading)
     st.markdown('### '+comparison_summary(result))
     st.caption('Different record-inclusion assumptions answer different questions; a changed leader does not make the original calculation incorrect.')
@@ -108,4 +118,4 @@ def comparison_result(result, *, heading='Confirmed comparison', filename='compa
     for warning in result.get('warnings',[]): st.caption('Note: '+warning)
     with st.expander('How this was calculated'):
         st.json(result)
-    evidence_download(result,filename,'Download comparison JSON')
+    evidence_download(result,filename,'Download comparison JSON',location=download_location)
