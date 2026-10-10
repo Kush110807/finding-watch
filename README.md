@@ -1,43 +1,25 @@
-> P1–P3 UI repairs are a review candidate based on commit 98b5e066a46f9cbd7d7d48193ca7abf2ff3bfb51. For remaining Windows/browser checks see `agentic/docs/UI_REPAIR_WINDOWS.md`. No M3, persistence or Revisit.
+# BYTE Applied ML — Finding Watch (Stage 1 review candidate)
 
-# BYTE Applied ML — Finding Watch P1–P3 UI review candidate
+**Stage 1 is pending independent review and is not accepted.** Starting commit `800619d0a3a9171513afa92b4f5e542206bfc381` preserves M1's deterministic evidence and the accepted, confirmation-gated M2 Challenge. M3, Saved Findings persistence and Revisit are not implemented. BYTE Basic Agentic Task only.
 
-**Scope:** Five distinct Phase 3 analytical tools; accepted M1 composable evidence; M2 restricted, confirmation-gated Challenge a Finding. The user reports **M1 accepted** after independent and Windows checks, including live M0 smoke checks. **M2 is accepted and frozen** at `4bf170a16fafe420b1c633e4b13fe96b7f76c1fe` following independent review, 105 Windows tests, confirmed Gemini golden comparison and successful manual browser Challenge verification (all reported by the reviewer). **The new P1–P3 UI pass is a candidate awaiting review.** Revisit, SQLite memory and forecasting have not been implemented. This project addresses the Basic Agentic Task only.
-
-## Local Windows setup
-
-For the P1–P3 UI verification and limitations, see **[`agentic/docs/UI_PASS_HANDOFF.md`](agentic/docs/UI_PASS_HANDOFF.md)**. For the underlying M2 specification, fixtures and prior checks, see **[`agentic/docs/M2_HANDOFF.md`](agentic/docs/M2_HANDOFF.md)**. Earlier repairs are documented in **[`agentic/docs/M1_REPAIR_HANDOFF.md`](agentic/docs/M1_REPAIR_HANDOFF.md)**. See **[`agentic/docs/M0_WINDOWS.md`](agentic/docs/M0_WINDOWS.md)** for exact install, real Gemini verification and Streamlit checks. `agentic/docs/M1_HANDOFF.md` documents the specification contract, evidence, limits and exclusions. `agentic/verify_live.py` uses an existing **private** local `.env`/environment variable and synthetic data only; it does not print keys. Do not commit or package secrets.
+## Start locally (Windows)
 
 ```powershell
 cd agentic
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe verify_live.py --output live_verification_local.json
-.\.venv\Scripts\python.exe verify_live_comparison.py --confirm --output live_comparison_confirmed_local.json
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-## Structure
+Open the app and choose **Try an example** or **Upload CSV**. The main path uses a dataset-specific suggestion or an explicit custom question and the **Analyse** action. Suggestions execute a bounded Python tool locally, without Gemini. Custom natural-language questions require explicit Gemini consent in the optional settings and a configured private API key. Python performs calculations; model explanations are not independently verified.
 
-- `engine.py`: guarded CSV load, five read-only deterministic tools, full-data filtered executor and evidence.
-- `specs.py`: strict versioned `AnalysisSpec` validator (no model-generated code execution).
-- `comparisons.py`: one-filter grouped comparison validator and full-data evidence; distinct from five analytical tools.
-- `agent.py`: bounded Gemini adapter and structured clarification; proposal-only confirmation-gated comparison tool; calculation evidence is separate from unverified narrative.
-- `presentation.py` and `ui_components.py`: evidence-derived, plain-language Streamlit presentation, clear pending/completed states, explicit clarification choices and preserved JSON downloads.
-- `app.py`: retained Streamlit manual/AI workflows, plus small manual/AI M2 definition preview and confirmation controls.
-- `tests/test_engine.py`: preserved Phase 3 deterministic engine tests.
-- `tests/test_m1.py`: independently expected M1 numerical fixtures and boundary cases.
-- `tests/test_m2.py`, `tests/test_m2_agent_adapter.py`: deterministic grouped Challenge checks and isolated offline SDK-shim tests.
-- `tests/test_agent.py` & `tests/test_app.py`: pinned-SDK mocked agent and real Streamlit AppTest tests requiring full dependencies.
-- `docs/`: requirements, contributions, M0/M1 verification and scope.
+The first result shows the evidence-derived finding, scope and definition, small exact-valued table, safe chart where possible, and material exclusions. The original calculation JSON and complete operation details are under **How this was calculated**. Inspection, full previews and other trace results remain behind explicit controls. Five manual analytical tools remain available in **Advanced** in the sidebar. Existing one-filter Challenge comparisons require confirmation.
 
-## Source history
+**Evidence fixture:** `agentic/data/demo_sales.csv` has Coffee revenue 3000 and Snacks revenue 1400 (difference 1600; four records, no filter). No currency or order meaning is inferred. Comparisons that might round unsafe integers do not render numeric charts.
 
-The M2 distribution includes `phaseUI-history.bundle` with the original Phase 3 baseline, M1, M2 and P1–P3 commits. Restore with:
+## Review and limitations
 
-```powershell
-git clone -b main .\phaseM2-history.bundle byte-ml-with-history
-```
+See [Stage 1 handoff](agentic/docs/STAGE1_HANDOFF.md), which separates deterministic, SDK-mocked, Streamlit AppTest, browser and live-provider evidence. In the candidate build's authoring environment, Streamlit and the Gemini SDK could not be installed because the package host was unreachable; no actual app screenshots are claimed. Perform the Windows suite, upload/clarification/provider checks and real desktop/mobile screenshot review before acceptance.
 
-The original audited ZIP is left untouched. `.env`, `.venv`, caches, DBs, user uploads and local live-verification logs are not distributed.
+The full Git history is preserved in the accompanying `stage1-history.bundle`. Restore with `git clone -b main stage1-history.bundle byte-ml-stage1`. No credentials, virtual environments or live verification logs are included in the archive.
