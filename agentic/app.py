@@ -8,7 +8,8 @@ from comparisons import prepare_comparison, execute_comparison
 from presentation import (metric_choices,group_candidates,missing_product_context,
                           filter_description,confirmed_comparison_matches)
 from ui_components import analysis_result,comparison_result,source_definition,evidence_download
-from stage1_logic import suggested_questions, primary_candidates, candidate_title
+from stage1_logic import suggested_questions, candidate_title
+from stage2_logic import calculated_choices, result_selection_key, append_clarification_context, response_failure_kind
 
 ROOT=Path(__file__).resolve().parent
 
@@ -179,6 +180,7 @@ with st.expander('Suggested questions · optional',expanded=False):
             st.session_state['stage1_question']=suggestion_choice
             st.session_state['stage1_active_suggestion']=suggestion_choice
             st.rerun()
+        st.caption('Full suggestion: '+str(suggestion_choice) if suggestion_choice else 'Select a suggestion to see its complete wording here, including on a phone.')
     else:
         st.caption('No safe local question suggestion for these columns. Ask a custom question with Gemini consent, or use the advanced manual tools.')
 with st.expander('Gemini connection and consent · optional',expanded=False):
@@ -317,6 +319,10 @@ if submit:
         suggested=suggestion_map.get(q) if st.session_state.get('stage1_active_suggestion')==q else None
         st.session_state.pop('last_clarified',None)
         st.session_state.pop('last_ai_comparison',None)
+        st.session_state.pop('clarify_method',None)
+        st.session_state.pop('last_visible_ai_trace_index',None)
+        st.session_state.pop('stage1_provider_error',None)
+        st.session_state['stage2_response_serial']=st.session_state.get('stage2_response_serial',0)+1
         if suggested:
             st.session_state.pop('last_answer',None)
             try:
@@ -344,7 +350,7 @@ if submit:
                     st.session_state.pop('last_answer',None)
                     st.session_state['stage1_provider_error']={'fingerprint':source_hash,'question':q,'message':str(exc)}
 if st.session_state.get('stage1_provider_error',{}).get('fingerprint')==source_hash and st.session_state['stage1_provider_error']['question']==question:
-    st.error('Gemini could not complete the request. Your question is still here. Check the connection/model in the optional settings, retry Analyse, or use a local suggested question.')
+    st.error('Gemini could not complete this request. Your question is preserved. Choose Analyse to retry, review optional connection settings, or use a local suggested question.')
     with st.expander('Provider error details'):st.write(st.session_state['stage1_provider_error']['message'])
 local=st.session_state.get('stage1_local_answer')
 if local and local['fingerprint']==source_hash:
@@ -368,11 +374,13 @@ if saved:
     submitted=saved['submitted_question']
     changed_question=(question!=submitted)
     if changed_question:
-        st.warning('Pending question edits. This response belongs to the previous submitted question; send your new question to replace it.')
+        st.session_state.pop('last_visible_ai_trace_index',None)
+        st.info('The current question has changed. The earlier response is hidden until you submit this question.')
     status=answer.get('status','unverified')
     if status=='clarification' and not changed_question:
-        st.info('Clarification needed — no analysis has run for this question.')
+        st.info('A definition is needed before this question can be calculated.')
         st.markdown('### Clarify your original question')
+        st.caption('Original question: '+submitted)
         if answer.get('answer'):
             st.caption('Gemini asked (not an executable definition): '+answer['answer'])
         if missing_product_context(cols,submitted):
@@ -426,7 +434,8 @@ if saved:
         elif method=='Explain the missing context (dates or other details)':
             st.caption('For example: “Dates are DD/MM/YYYY” or “compare records by week”. Your explanation is context for Gemini, not executable code.')
             with st.form('clarify_context_form'):
-                details=st.text_area('Your clarification',max_chars=2000,key='clarify_context')
+                details=st.text_area('Your clarification',max_chars=2000,
+                                     key=f'clarify_context_{st.session_state.get("stage2_response_serial",0)}')
                 contextual_submit=st.form_submit_button('Continue with original question and my clarification',type='primary')
             if contextual_submit:
                 if not details.strip():
@@ -435,17 +444,26 @@ if saved:
                     st.error('Enable Gemini consent to send contextual clarification.')
                 else:
                     try:
-                        with st.spinner('Reconsidering the original question with your clarification…'):
-                            new_response=ask(df,submitted,clarification_context=details)
-                        st.session_state.pop('last_clarified',None)
-                        st.session_state.pop('last_ai_comparison',None)
-                        st.session_state.pop('stage1_provider_error',None)
-                        st.session_state['last_answer']={'dataset_fingerprint':source_hash,
-                            'submitted_question':submitted,'response':new_response,
-                            'clarification_context':details,'baseline_reference':None}
-                        st.rerun()
-                    except AgentError as exc:
+                        combined_context=append_clarification_context(
+                            saved.get('clarification_context'),details)
+                    except ValueError as exc:
                         st.error(str(exc))
+                    else:
+                        try:
+                            with st.spinner('Reconsidering the original question with your clarification…'):
+                                new_response=ask(df,submitted,clarification_context=combined_context)
+                            st.session_state.pop('last_clarified',None)
+                            st.session_state.pop('last_ai_comparison',None)
+                            st.session_state.pop('stage1_provider_error',None)
+                            st.session_state['stage2_response_serial']=st.session_state.get('stage2_response_serial',0)+1
+                            st.session_state['last_answer']={'dataset_fingerprint':source_hash,
+                                'submitted_question':submitted,'response':new_response,
+                                'clarification_context':combined_context,'baseline_reference':None}
+                            st.rerun()
+                        except AgentError as exc:
+                            st.error('Gemini could not process the clarification. Keep your original question and try again.')
+                            with st.expander('Provider error details'):
+                                st.write(str(exc))
     elif status=='clarification' and changed_question:
         st.info('The previous clarification is paused until you resubmit the edited question.')
     elif status=='comparison_pending' and not changed_question:
@@ -458,21 +476,37 @@ if saved:
             st.caption('Gemini originally proposed the Challenge. The user-confirmed calculation is shown below.')
         else:
             st.warning('PENDING USER CONFIRMATION — the proposed Challenge has not been calculated.')
-    elif status in ('error','limited','unverified'):
-        st.error('Analysis not completed: '+str(answer.get('answer','No verified calculation available.')))
-        st.caption('Your question is retained. Check the Gemini connection and model under optional settings, then try Analyse again; or use a local suggested question.')
+    elif status in ('error','limited','unverified') and not changed_question:
+        problem=response_failure_kind(answer)
+        if problem=='calculation':
+            st.error('The calculation could not be completed. Check column choices, filters, and any date format; correct the definition and retry Analyse or use the advanced local tools.')
+        elif problem=='provider':
+            st.error('Gemini could not complete this request. Retry Analyse or inspect connection settings; local suggested questions are also available.')
+        else:
+            st.info('No supported calculation was completed. Specify the grouping, measure, or date format and retry Analyse, or use a local tool.')
+        with st.expander('Provider or calculation details'):
+            st.write(str(answer.get('answer','No verified calculation available.')))
+            for event in answer.get('trace',[]):
+                detail=event.get('result',{})
+                if isinstance(detail,dict) and detail.get('error'):
+                    st.caption(str(detail['error']))
+            st.caption('No previous finding is being shown as this answer. Tool failure and provider failure are different states.')
 
     if not changed_question and status=='evidence_available':
-        entries=primary_candidates(answer.get('trace',[]))
+        choices=calculated_choices(answer.get('trace',[]))
         chosen=None
-        if len(entries)==1:
-            chosen=entries[0]
-        elif len(entries)>1:
-            st.info('Several calculations completed. Choose the one you want to inspect; the model has not established which answers your question.')
-            titles={candidate_title(i,event):(i,event) for i,event in entries}
-            title=st.selectbox('Which calculated result would you like to see?',
-                               list(titles),index=None,placeholder='Select a result',key='primary_result_choice')
-            chosen=titles.get(title)
+        if len(choices)==1:
+            chosen=(choices[0]['position'],choices[0]['event'])
+        elif len(choices)>1:
+            st.info('Several calculations completed. Choose which definition to inspect; no result is automatically treated as the intended answer.')
+            selection_key=result_selection_key(source_hash,submitted,answer,
+                st.session_state.get('stage2_response_serial',0))
+            selected_position=st.selectbox('Which calculated result would you like to see?',
+                [c['position'] for c in choices],index=None,
+                format_func=lambda pos:next((c['label'] for c in choices if c['position']==pos), 'Choose a calculation'),
+                placeholder='Select a calculated definition',key=selection_key)
+            matching=next((c for c in choices if c['position']==selected_position),None)
+            chosen=(matching['position'],matching['event']) if matching else None
         if chosen:
             index,event=chosen
             analysis_result(event['result'],heading='Calculated finding',model_tool=True,

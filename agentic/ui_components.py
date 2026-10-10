@@ -5,7 +5,7 @@ import streamlit as st
 from download_keys import evidence_key
 from stage1_logic import two_group_difference
 from presentation import (summary, comparison_summary, comparison_table, label, number,
-                          metric_definition, spec_description, filter_description,chart_safe,display_rows,readable_measure,simple_group_table)
+                          metric_definition, spec_description, filter_description,chart_safe,display_rows,readable_measure,simple_group_table,visible_result_rows,important_notices,observed_period_label)
 
 
 def evidence_download(data, filename, caption='Download complete, unmodified calculation evidence', *,
@@ -57,93 +57,90 @@ def accounting(evidence):
 
 def analysis_result(output, *, heading='Calculated result', model_tool=False, question=None,
                     download_location, download_occurrence=0):
-    """Conclusion-first rendering; never converts the original evidence."""
-    st.subheader(heading)
-    st.markdown('### '+summary(output))
+    """Five evidence-first tools: friendly result; original JSON stays intact."""
+    tool=output.get('tool')
     ev=output.get('evidence',{})
     spec=ev.get('executed_spec',{})
+    args=spec.get('arguments',{})
     info=spec_description(spec)
-    acct=ev.get('accounting',{})
-    tool=output.get('tool')
-    if tool=='grouped_summary':
-        st.caption(f'**Measure:** {readable_measure(spec).capitalize()} · **Grouped by:** {info["group"]}')
-    elif tool=='time_trend':
-        st.caption('**Definition:** '+info['metric']+' · by '+str(spec.get('arguments',{}).get('frequency')))
-    elif tool=='correlation':
-        st.caption('**Definition:** Pearson correlation · '+str(spec.get('arguments',{}).get('x'))+
-                   ' against '+str(spec.get('arguments',{}).get('y')))
-    else:
-        st.caption('**Definition:** '+('Matching records' if tool=='filter_rows' else 'Column and dataset inspection'))
-    scope=f'{acct.get("selected_rows",0):,} selected of {acct.get("input_rows",0):,} records'
-    if info['filters']:
-        scope+=' · Filters: '+'; '.join(info['filters'])
-        st.caption(scope)
-    else:
-        st.caption(f'Based on all {acct.get("input_rows",0):,} records, with no filters.'
-                   if acct.get('selected_rows')==acct.get('input_rows')
-                   else scope+' · No filters')
-
-    if model_tool:
-        st.caption('This calculation is reproducible. Its relevance to your question and any model interpretation have not been independently verified.')
-    diff=two_group_difference(output)
-    if diff and not diff['tie']:
-        operation=spec.get('arguments',{}).get('operation')
-        noun={'sum':'total','mean':'average','count_rows':'record count',
-              'min':'minimum','max':'maximum'}.get(operation,'calculated value')
-        st.markdown(f'**{label(diff["leader"])}’s {noun} is {number(diff["difference"])} higher.**')
-    operation=acct.get('operation_exclusions',{})
-    for key,desc in [('missing_metric_excluded_from_values','records had no numeric metric; they did not contribute to values'),
-                     ('missing_date_excluded','records had no valid date and were excluded from time periods'),
-                     ('excluded_incomplete_pairs_union','records lacked at least one correlation value')]:
-        if operation.get(key):
-            st.warning(f'{operation[key]:,} {desc}.')
-    for warning in ev.get('warnings',[]):st.warning(str(warning))
+    account=ev.get('accounting',{})
+    display=ev.get('display',{})
     rows=output.get('rows',[])
+    st.subheader(heading)
+    st.markdown('### '+summary(output))
+    if tool=='grouped_summary':
+        st.caption(f'**Measure:** {metric_definition(spec)} · **Grouped by:** {args.get("group")}')
+    elif tool=='time_trend':
+        st.caption(f'**Measure:** {metric_definition(spec)} · **Date column:** {args.get("date_column")} · '
+                   f'**Date format:** {args.get("date_format")} · **Interval:** {args.get("frequency")}')
+        st.caption('Only periods present in the data are shown; missing periods are not treated as zero.')
+    elif tool=='correlation':
+        st.caption(f'**Columns:** {args.get("x")} and {args.get("y")} · '
+                   f'**Complete pairs:** {account.get("operation_exclusions",{}).get("complete_pairs",0):,}')
+    elif tool=='filter_rows':
+        st.caption(f'**Matching records:** {account.get("selected_rows",0):,} · '
+                   f'**Displayed:** {len(rows):,} of {display.get("total_result_rows",len(rows)):,}')
+    elif tool=='inspect_dataset':
+        meta=output.get('metadata',{})
+        missing=sum(int(row.get('missing',0)) for row in rows)
+        st.caption(f'**Columns:** {meta.get("total_columns",len(rows)):,} · '
+                   f'**Empty cells in displayed profiles:** {missing:,} · '
+                   f'**Duplicate records:** {meta.get("duplicate_rows",0):,}')
+        st.caption('Profiling describes structure and missing cells; it does not validate data accuracy.')
+    if info['filters']:
+        st.caption(f'{account.get("selected_rows",0):,} of {account.get("input_rows",0):,} records selected · '
+                   +'Conditions: '+'; '.join(info['filters']))
+    elif tool!='filter_rows':
+        st.caption(f'Based on all {account.get("input_rows",0):,} records, with no filters.'
+                   if account.get('selected_rows')==account.get('input_rows')
+                   else f'{account.get("selected_rows",0):,} of {account.get("input_rows",0):,} records selected.')
+    if model_tool:
+        st.caption('Calculated values are reproducible; whether this calculation answers your intended question is not independently verified.')
+    if tool=='grouped_summary':
+        diff=two_group_difference(output)
+        if diff and not diff['tie']:
+            noun={'sum':'total','mean':'average','count_rows':'record count',
+                  'min':'minimum','max':'maximum'}.get(args.get('operation'),'calculated value')
+            st.markdown(f'**{label(diff["leader"])}’s {noun} is {number(diff["difference"])} higher.**')
+    for notice in important_notices(output):
+        st.warning(str(notice))
     if rows:
-        all_columns=display_rows(rows[:12])  # strings created before pandas inference
-        if tool=='grouped_summary':
-            visible=simple_group_table(rows[:12],spec)
-        else:
-            friendly={'group_value': str(info['group']) if info['group'] is not None else 'Group',
-                      'value':info['metric'],'period_start':'Period',
-                      'non_missing_metric_count':'Records with numeric value',
-                      'record_count':'Records','pearson_r':'Pearson correlation (r)',
-                      'group_count':'Groups'}
-            visible=[{friendly.get(k,k):v for k,v in record.items()} for record in all_columns]
-        table=pd.DataFrame(visible,dtype=str)
-        st.dataframe(table,hide_index=True,use_container_width=True,
-                     height=min(40+35*(len(table)+1),340))
+        visible=visible_result_rows(output,cap=12)
+        st.dataframe(pd.DataFrame(visible,dtype=str),hide_index=True,use_container_width=True,
+                     height=min(40+35*(len(visible)+1),340))
         if len(rows)>12:
-            st.caption(f'Showing 12 of {len(rows):,} returned rows. Complete values are available in the evidence download.')
+            st.caption(f'Showing 12 of {len(rows):,} returned rows. Full values are in the original evidence.')
     if tool in ('grouped_summary','time_trend') and 2<=len(rows)<=8 and chart_safe(rows):
         axis='group_value' if tool=='grouped_summary' else 'period_start'
-        # Only finite, within-safe-range values reach the chart. Evidence remains exact.
         measure=readable_measure(spec).capitalize()
-        chart=pd.DataFrame({'Group':[label(r.get(axis)) for r in rows],
-                            measure:[r['value'] for r in rows]})
+        labels=[label(r.get(axis)) if tool=='grouped_summary' else observed_period_label(r.get(axis),args.get('frequency')) for r in rows]
+        chart=pd.DataFrame({'Group':labels,measure:[r['value'] for r in rows]})
         if chart['Group'].is_unique:
-            st.bar_chart(chart,x='Group',y=measure,horizontal=True,color='#087F78',
-                         height=min(80+50*len(rows),250),use_container_width=True)
+            if tool=='time_trend':
+                st.line_chart(chart,x='Group',y=measure,color='#087F78',height=220,use_container_width=True)
+            else:
+                st.bar_chart(chart,x='Group',y=measure,horizontal=True,color='#087F78',
+                             height=min(80+50*len(rows),250),use_container_width=True)
     elif tool in ('grouped_summary','time_trend') and rows and not chart_safe(rows):
-        st.caption('Chart omitted to avoid rounding large exact values or misrepresenting missing results. Precise values are in the table.')
-    display=ev.get('display',{})
+        st.caption('Chart omitted to avoid rounding exact large numbers or plotting missing values. The table retains original precision.')
     if display.get('truncated'):
-        st.warning(f'Only {display.get("returned_rows")} of {display.get("total_result_rows")} result rows were returned. The calculation used all selected records; undisplayed groups may change the ranking.')
+        kind='matching records' if tool=='filter_rows' else 'results'
+        st.warning(f'Only {display.get("returned_rows")} of {display.get("total_result_rows")} {kind} are shown. '
+                   'Calculations use all eligible records, not the preview.')
     with st.expander('How this was calculated',expanded=False):
         source_definition(spec)
         accounting(ev)
         if tool=='grouped_summary' and rows:
-            st.caption('Detailed group accounting (including record counts and missing numeric values):')
+            st.caption('Detailed group accounting, including record counts and missing numeric values:')
             st.dataframe(pd.DataFrame(display_rows(rows[:12]),dtype=str).rename(columns={
                 'group_value':str(info['group']) if info['group'] is not None else 'Group',
                 'value':readable_measure(spec).capitalize(),
-                'record_count':'Records in group',
+                'row_count':'Records in group',
                 'non_missing_metric_count':'Records with numeric values'}),hide_index=True,use_container_width=True)
         st.json(ev)
         st.json(output.get('metadata',{}))
         evidence_download(output,'analysis_result.json','Download original result JSON',
                           location=download_location,occurrence=download_occurrence)
-
 
 def comparison_result(result, *, heading='Confirmed comparison', filename='comparison.json',
                       download_location):

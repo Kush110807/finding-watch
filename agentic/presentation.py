@@ -4,6 +4,7 @@ No money, product, order or unit semantics are inferred from column names.
 UI callers must preserve the source JSON and require explicit user selection.
 """
 from collections.abc import Mapping
+from datetime import datetime
 
 
 def label(value):
@@ -66,15 +67,27 @@ def readable_measure(spec):
     return f'{prefix} {metric}'
 
 
+def observed_period_label(period, frequency):
+    """Display an actual observed engine period; never generate empty buckets."""
+    try:
+        date=datetime.strptime(period,'%Y-%m-%d')
+        if frequency=='month':return date.strftime('%b %Y')
+        if frequency=='week':return 'Week of '+date.strftime('%d %b %Y')
+        return date.strftime('%d %b %Y')
+    except (ValueError,TypeError):
+        return str(period)
+
+
 def summary(output):
-    """Readable conclusion drawn only from deterministic result evidence."""
+    """Readable facts from completed evidence, not model prose or guessing."""
     tool=output['tool']; rows=output.get('rows',[])
     evidence=output.get('evidence',{}); account=evidence.get('accounting',{})
-    display=evidence.get('display',{})
+    display=evidence.get('display',{}); spec=evidence.get('executed_spec',{})
     if tool=='inspect_dataset':
-        return f'Dataset contains {account.get("input_rows",output.get("metadata",{}).get("total_rows",0)):,} records and {len(rows)} displayed column profiles.'
+        columns=output.get('metadata',{}).get('total_columns',len(rows))
+        return f'Dataset overview: {account.get("selected_rows",0):,} records across {columns:,} columns.'
     if tool=='filter_rows':
-        return f'{account.get("selected_rows",0):,} records match the submitted conditions.'
+        return f'{account.get("selected_rows",0):,} records match the selected conditions.'
     if tool=='grouped_summary':
         if display.get('truncated'):
             return (f'{display.get("returned_rows",len(rows)):,} of '
@@ -85,22 +98,73 @@ def summary(output):
             return 'No numeric result is available for the selected groups.'
         highest=max(r['value'] for r in valued)
         leaders=[label(r.get('group_value')) for r in valued if r['value']==highest]
-        measure=readable_measure(evidence.get('executed_spec',{}))
+        measure=readable_measure(spec)
         if len(leaders)>1:
             return f'{", ".join(leaders)} tie for the highest {measure}.'
         return f'{leaders[0]} leads in {measure}.'
     if tool=='time_trend':
+        frequency=spec.get('arguments',{}).get('frequency','period')
+        n=display.get('total_result_rows',len(rows))
         if display.get('truncated'):
-            return f'{len(rows)} time periods shown; the result is incomplete.'
+            return f'{len(rows)} of {n} observed time periods shown; the result is incomplete.'
         if not rows or not any(r.get('value') is not None for r in rows):
             return 'No numeric time-period result is available.'
-        return f'{len(rows):,} time periods calculated. Compare the values below.'
+        return f'{metric_definition(spec)} calculated across {n:,} observed {frequency} periods.'
     if tool=='correlation':
+        usable=account.get('operation_exclusions',{}).get('complete_pairs',output.get('metadata',{}).get('complete_pairs',0))
         if rows and rows[0].get('pearson_r') is not None:
-            return f'Pearson correlation r = {number(rows[0]["pearson_r"])}. Association does not establish causation.'
-        return 'No valid numeric relationship result.'
+            return f'Pearson correlation: {number(rows[0]["pearson_r"])} using {usable:,} complete pairs.'
+        return 'No valid Pearson correlation result is available.'
     return 'Calculation returned; inspect supporting evidence.'
 
+
+def visible_result_rows(output, cap=12):
+    """Format precise original evidence scalars BEFORE DataFrame inference."""
+    rows=output.get('rows',[])[:cap]
+    spec=output.get('evidence',{}).get('executed_spec',{})
+    args=spec.get('arguments',{})
+    tool=output.get('tool')
+    if tool=='grouped_summary':
+        return simple_group_table(rows,spec)
+    if tool=='time_trend':
+        return [{'Period':observed_period_label(row.get('period_start'),args.get('frequency')),
+                 metric_definition(spec):number(row.get('value'))} for row in rows]
+    if tool=='correlation':
+        return [{'First column':str(row.get('x')),'Second column':str(row.get('y')),
+                 'Pearson correlation (r)':number(row.get('pearson_r'))} for row in rows]
+    if tool=='inspect_dataset':
+        return [{'Column':str(row.get('column')),
+                 'Detected type':str(row.get('dtype')),
+                 'Missing values':number(row.get('missing')),
+                 'Distinct non-missing values':number(row.get('unique_non_missing'))} for row in rows]
+    if tool=='filter_rows':
+        return [{str(key):('Missing' if value is None else number(value)) for key,value in row.items()}
+                for row in rows]
+    return display_rows(rows)
+
+
+def important_notices(output):
+    """Material calculation exclusions only; avoids duplicating engine notices."""
+    ev=output.get('evidence',{}); op=ev.get('accounting',{}).get('operation_exclusions',{})
+    notices=[]
+    for key,desc in (
+        ('missing_group_labels_included','records have no group label and form a separate missing-label group'),
+        ('missing_metric_excluded_from_values','records lack a numeric value; excluded from calculated values'),
+        ('missing_date_excluded','records lack a date and were excluded from period calculations'),
+        ('missing_metric_with_valid_date_excluded_from_values','records have a date but no numeric value; excluded from period values'),
+        ('excluded_incomplete_pairs_union','records lack one or both correlation values and were excluded')):
+        if op.get(key):notices.append(f'{op[key]:,} {desc}.')
+    warnings=ev.get('warnings',[])
+    for warning in warnings:
+        if ('tie for highest' in warning or 'missing metric values' in warning or
+            'missing date(s)' in warning or 'missing group label' in warning or
+            'Pearson correlation is not evidence of causation' in warning or
+            'Output display truncated' in warning):
+            continue
+        notices.append(warning)
+    if output.get('tool')=='correlation':
+        notices.append('Correlation measures association, not cause and effect.')
+    return list(dict.fromkeys(notices))
 
 def comparison_summary(comparison):
     c=comparison['comparison']

@@ -249,7 +249,7 @@ class P1P3UiAppTests(unittest.TestCase):
             mocked.assert_called_once()
             self.field(at,'text_input','Your question').input('What changed?').run()
             self.assertFalse(at.exception)
-            self.assertTrue(any('pending question edits' in str(w.value).lower() for w in at.warning))
+            self.assertTrue(any('current question has changed' in str(w.value).lower() for w in at.info))
 
     def test_clarification_explicit_count_rows_not_orders(self):
         with patch('agent.ask',return_value=self.mocked_answer()):
@@ -266,7 +266,7 @@ class P1P3UiAppTests(unittest.TestCase):
         with patch('agent.ask',return_value=self.mocked_answer('error','Quota unavailable.')):
             at=self.submit_question(_launch(),'What is the top category?')
             self.assertFalse(at.exception)
-            self.assertTrue(any('Quota unavailable.' in str(e.value) for e in at.error))
+            self.assertTrue(any('did not complete' in str(e.value).lower() for e in at.error))
 
     def test_streamlit_result_table_uses_exact_large_integer_evidence(self):
         raw=b'g,amount\n'+b'A,999999999999999\n'*11+b'B,\n'
@@ -617,3 +617,132 @@ class Stage1DownloadLocationAppTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class Stage2AppTests(unittest.TestCase):
+    """Real pinned-Streamlit AppTest regressions, no provider network calls."""
+    @staticmethod
+    def evidence(tool, args):
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        return run_tool(df,tool,args)
+
+    @staticmethod
+    def response(*results):
+        return {'status':'evidence_available','answer':'Provider commentary (not verified)',
+                'trace':[{'tool':r['tool'],'result':r,'arguments':r['evidence']['executed_spec']['arguments']} for r in results],
+                'calculation_verified':True,'explanation_verified':False}
+
+    @staticmethod
+    def ask_screen(response, question='What does this dataset show?'):
+        with patch('agent.ask',return_value=response):
+            at=_loaded()
+            _field(at,'checkbox','I agree to send my question and relevant dataset information to Gemini.').check().run()
+            _field(at,'text_input','Your question').input(question).run()
+            _field(at,'button','Analyse').click().run()
+        return at
+
+    def test_inspection_view_with_quality_and_download(self):
+        out=self.evidence('inspect_dataset',{})
+        at=self.ask_screen(self.response(out))
+        self.assertFalse(at.exception)
+        self.assertTrue(any('Dataset overview' in m.value for m in at.markdown))
+        self.assertTrue(any('How this was calculated'==e.label for e in at.expander))
+        self.assertTrue(any(b.label=='Download original result JSON' for b in at.button))
+
+    def test_filtered_view_total_vs_bounded_display(self):
+        out=self.evidence('filter_rows',{'field':'category','operator':'eq','value':'Coffee','limit':1})
+        at=self.ask_screen(self.response(out))
+        self.assertFalse(at.exception)
+        self.assertTrue(any('2 records match' in m.value for m in at.markdown))
+        self.assertTrue(any('matching records are shown' in w.value.lower() for w in at.warning))
+
+    def test_group_time_correlation_readable_results(self):
+        cases=[('grouped_summary',{'group':'category','operation':'sum','metric':'revenue'},'Coffee leads'),
+               ('time_trend',{'date_column':'date','date_format':'%Y-%m-%d','frequency':'month',
+                              'operation':'sum','metric':'revenue'},'observed month periods'),
+               ('correlation',{'x':'revenue','y':'units'},'Pearson correlation')]
+        for tool,args,fragment in cases:
+            with self.subTest(tool=tool):
+                at=self.ask_screen(self.response(self.evidence(tool,args)))
+                self.assertFalse(at.exception)
+                self.assertTrue(any(fragment in m.value for m in at.markdown))
+                self.assertTrue(any(b.label=='Download original result JSON' for b in at.button))
+
+    def test_inspection_then_aggregation_is_primary(self):
+        inspect=self.evidence('inspect_dataset',{})
+        grouped=self.evidence('grouped_summary',{'group':'category','operation':'sum','metric':'revenue'})
+        at=self.ask_screen(self.response(inspect,grouped))
+        self.assertFalse(at.exception)
+        self.assertTrue(any('Coffee leads' in m.value for m in at.markdown))
+        self.assertFalse(any(s.label=='Which calculated result would you like to see?' for s in at.selectbox))
+        self.assertTrue(any(b.label=='Download this tool result JSON' for b in at.button))
+
+    def test_multiple_repeated_results_selection_is_scoped_to_response(self):
+        one=self.evidence('grouped_summary',{'group':'category','operation':'sum','metric':'revenue'})
+        two=self.evidence('grouped_summary',{'group':'region','operation':'count_rows'})
+        at=self.ask_screen(self.response(one,one,two))
+        self.assertFalse(at.exception)
+        picker=_field(at,'selectbox','Which calculated result would you like to see?')
+        self.assertEqual(len(picker.options),3)
+        picker.select(picker.options[1]).run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any('Calculated finding' in x.value for x in at.subheader))
+        self.assertTrue(any(b.label=='Download original result JSON' for b in at.button))
+        self.assertEqual(at.session_state['last_visible_ai_trace_index'],2)
+        _field(at,'text_input','Your question').input('Edited question').run()
+        self.assertFalse(at.exception)
+        self.assertFalse(any(x.value=='Calculated finding' for x in at.subheader))
+        self.assertFalse(any(b.label=='Download original result JSON' for b in at.button))
+
+    def test_new_same_question_response_does_not_inherit_selection(self):
+        one=self.evidence('grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+        with patch('agent.ask',return_value=self.response(one,one)):
+            at=_loaded()
+            _field(at,'checkbox','I agree to send my question and relevant dataset information to Gemini.').check().run()
+            _field(at,'text_input','Your question').input('Compare totals').run()
+            _field(at,'button','Analyse').click().run()
+            picker=_field(at,'selectbox','Which calculated result would you like to see?')
+            picker.select(picker.options[0]).run()
+            self.assertEqual(at.session_state['last_visible_ai_trace_index'],1)
+            _field(at,'button','Analyse').click().run()
+            self.assertFalse(at.exception)
+            self.assertFalse(any(x.value=='Calculated finding' for x in at.subheader))
+
+    def test_contextual_followups_retain_prior_context_without_calculating_from_choice(self):
+        clarification={'status':'clarification','answer':'Date format?','trace':[],
+                       'calculation_verified':False,'explanation_verified':False}
+        with patch('agent.ask',side_effect=[clarification,clarification,clarification]) as send:
+            at=_loaded()
+            _field(at,'checkbox','I agree to send my question and relevant dataset information to Gemini.').check().run()
+            original='What happened on 02/03/2026?'
+            _field(at,'text_input','Your question').input(original).run()
+            _field(at,'button','Analyse').click().run()
+            _field(at,'radio','Clarification approach').set_value('Explain the missing context (dates or other details)').run()
+            _field(at,'text_area','Your clarification').input('Dates are DD/MM/YYYY').run()
+            self.assertEqual(send.call_count,1)
+            _field(at,'button','Continue with original question and my clarification').click().run()
+            self.assertEqual(send.call_count,2)
+            _field(at,'radio','Clarification approach').set_value('Explain the missing context (dates or other details)').run()
+            _field(at,'text_area','Your clarification').input('Use monthly intervals').run()
+            self.assertEqual(send.call_count,2)
+            _field(at,'button','Continue with original question and my clarification').click().run()
+            self.assertFalse(at.exception)
+            self.assertEqual(send.call_count,3)
+            self.assertEqual(send.call_args.args[1],original)
+            self.assertIn('DD/MM/YYYY',send.call_args.kwargs['clarification_context'])
+            self.assertIn('monthly intervals',send.call_args.kwargs['clarification_context'])
+
+    def test_provider_error_after_success_hides_old_answer_and_preserves_question(self):
+        from agent import AgentError
+        one=self.evidence('grouped_summary',{'group':'category','operation':'sum','metric':'revenue'})
+        with patch('agent.ask',side_effect=[self.response(one),AgentError('Temporarily unavailable')]):
+            at=_loaded()
+            _field(at,'checkbox','I agree to send my question and relevant dataset information to Gemini.').check().run()
+            _field(at,'text_input','Your question').input('First question').run()
+            _field(at,'button','Analyse').click().run()
+            self.assertTrue(any('Coffee leads' in m.value for m in at.markdown))
+            _field(at,'text_input','Your question').input('Second question').run()
+            _field(at,'button','Analyse').click().run()
+            self.assertFalse(at.exception)
+            self.assertTrue(any('Gemini could not complete' in e.value for e in at.error))
+            self.assertFalse(any('Coffee leads' in m.value for m in at.markdown))
+            self.assertEqual(at.session_state['stage1_question'],'Second question')
