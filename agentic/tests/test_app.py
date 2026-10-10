@@ -167,6 +167,18 @@ class ChatAppTests(unittest.TestCase):
             self.assertTrue(any('Gemini could not complete' in x.value for x in at.error))
             self.assertEqual(at.session_state['stage1_question'],'Question')
 
+def _stage3_open_add_review(at, field, value):
+    """User must open, fill and explicitly review; opening is not a proposal."""
+    _field(at,'button','Test another condition').click().run()
+    assert not at.exception
+    _field(at,'selectbox','What would you like to change?').select('Add condition').run()
+    _field(at,'selectbox','Column').select(field).run()
+    _field(at,'selectbox','Condition').select('eq').run()
+    _field(at,'selectbox','Value').select_index(value).run()
+    _field(at,'button','Review comparison').click().run()
+    return at
+
+
 class M2ChallengeAppTests(unittest.TestCase):
     """Run on Windows with real Streamlit and SDK packages (no live model calls)."""
 
@@ -181,25 +193,23 @@ class M2ChallengeAppTests(unittest.TestCase):
         _run_button(at)
         self.assertFalse(at.exception)
         self.assertNotIn('last_manual_comparison',at.session_state)
-        self.widget(at,'selectbox','Challenged filter column').select('category').run()
-        self.widget(at,'text_input','Challenged filter value').input('Coffee').run()
+        _stage3_open_add_review(at,'category',0)
         self.assertFalse(at.exception)
         self.assertNotIn('last_manual_comparison',at.session_state)
-        self.widget(at,'button','Run confirmed manual comparison').click().run()
+        self.widget(at,'button','Confirm and compare').click().run()
         self.assertFalse(at.exception)
         result=at.session_state['last_manual_comparison']['result']
         self.assertEqual(result['status'],'completed')
         self.assertFalse(any('not calculated or approved' in str(w.value).lower() for w in at.warning))
-        self.assertTrue(any('confirmed' in str(x.value).lower() for x in at.success))
-        self.assertTrue(any('Challenge · confirmed' in str(x.value) for x in at.markdown))
-        self.assertFalse(any('Challenge · pending' in str(x.value) for x in at.markdown))
+        self.assertTrue(any('Completed comparison' in str(x.value) for x in at.markdown))
+        self.assertTrue(any('User-confirmed Challenge' in x.value for x in at.subheader))
         self.assertEqual(result['accounting']['baseline']['selected_rows'],4)
         self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
-        self.widget(at,'text_input','Challenged filter value').input('Snacks').run()
+        self.widget(at,'selectbox','Value').select_index(1).run()
         self.assertFalse(at.exception)
-        self.assertIn('last_manual_comparison',at.session_state)
+        self.assertNotIn('last_manual_comparison',at.session_state)
         self.assertFalse(any('Download comparison JSON'==b.label for b in at.download_button))
-        self.assertTrue(any('pending' in str(w.value).lower() for w in at.warning))
+        self.assertFalse(any('Completed comparison' in str(x.value) for x in at.markdown))
 
     def test_ai_comparison_pending_then_user_confirmed(self):
         from comparisons import prepare_comparison
@@ -225,7 +235,7 @@ class M2ChallengeAppTests(unittest.TestCase):
             self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
             self.assertEqual(result['status'],'completed')
             self.assertFalse(any('not calculated' in str(x.value).lower() for x in at.warning))
-            self.assertTrue(any('confirmed' in str(x.value).lower() for x in at.success))
+            self.assertTrue(any('Completed comparison' in str(x.value) for x in at.markdown))
             self.widget(at,'text_input','Your question').input('Some other question').run()
             self.assertFalse(at.exception)
             self.assertFalse(any(b.label=='Confirm and run proposed comparison' for b in at.button))
@@ -339,20 +349,18 @@ class P1P3UiAppTests(unittest.TestCase):
             self.field(at,'selectbox','Which calculation should define “best”?').select('Total of “units”').run()
             self.field(at,'button','Analyse with my choices').click().run()
             self.assertNotIn('last_manual',at.session_state)
-            self.field(at,'selectbox','Challenged filter column').select('region').run()
-            self.field(at,'text_input','Challenged filter value').input('North').run()
-            self.field(at,'button','Run confirmed clarified comparison').click().run()
+            _stage3_open_add_review(at,'region',0)
+            self.field(at,'button','Confirm and compare').click().run()
             self.assertFalse(at.exception)
             entry=at.session_state['last_clarified_comparison']
             self.assertEqual(entry['baseline_binding']['kind'],'clarified')
             self.assertEqual(entry['result']['baseline_spec']['arguments']['metric'],'units')
             self.assertEqual(entry['result']['status'],'completed')
-            self.assertTrue(any('Challenge · confirmed' in str(x.value) for x in at.markdown))
-            self.assertFalse(any('Challenge · pending' in str(x.value) for x in at.markdown))
-            self.field(at,'text_input','Challenged filter value').input('South').run()
+            self.assertTrue(any('User-confirmed Challenge' in x.value for x in at.subheader))
+            self.field(at,'selectbox','Value').select_index(1).run()
             self.assertFalse(at.exception)
             self.assertFalse(any('Download comparison JSON'==b.label for b in at.download_button))
-            self.assertTrue(any('pending' in str(x.value).lower() for x in at.warning))
+            self.assertFalse(any('Completed comparison' in str(x.value) for x in at.markdown))
 
     def test_followup_baseline_must_be_explicit(self):
         from engine import load_csv,run_tool
@@ -612,20 +620,19 @@ class Stage1DownloadLocationAppTests(unittest.TestCase):
         at=_select_local_suggestion(_loaded())
         _field(at,'button','Analyse').click().run()
         self.assertFalse(at.exception,str(at.exception))
-        _field(at,'selectbox','Challenged filter column').select('category').run()
-        _field(at,'text_input','Challenged filter value').input('Coffee').run()
-        _field(at,'button','Run confirmed comparison').click().run()
+        _stage3_open_add_review(at,'category',0)
+        _field(at,'button','Confirm and compare').click().run()
         self.assertFalse(at.exception,str(at.exception))
         comparison=at.session_state['last_suggested_comparison']['result']
         self.assertEqual(comparison['status'],'completed')
         self.assertEqual(comparison['accounting']['baseline']['selected_rows'],4)
         self.assertEqual(comparison['accounting']['challenged']['selected_rows'],2)
-        self.assertTrue(any('confirmed' in str(x.value).lower() for x in at.success))
+        self.assertTrue(any('Completed comparison' in str(x.value) for x in at.markdown))
         self.assertTrue(any('User-confirmed Challenge' in x.value for x in at.subheader))
         _assert_download(at,'stage1_local_result','Download original result JSON')
         _assert_download(at,'suggested_comparison','Download comparison JSON')
         # Changing the exact condition hides the previous completed result.
-        _field(at,'text_input','Challenged filter value').input('Snacks').run()
+        _field(at,'selectbox','Value').select_index(1).run()
         self.assertFalse(at.exception,str(at.exception))
         self.assertFalse(any('User-confirmed Challenge' in x.value for x in at.subheader))
         self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
@@ -834,3 +841,91 @@ class Stage2AppTests(unittest.TestCase):
             self.assertTrue(any('Gemini could not complete' in e.value for e in at.error))
             self.assertFalse(any('Coffee leads' in m.value for m in at.markdown))
             self.assertEqual(at.session_state['stage1_question'],'Second question')
+
+
+class Stage3ChallengeAppTests(unittest.TestCase):
+    """Requires real pinned Streamlit AppTest on Windows; no mocked UI substitute."""
+
+    def test_open_and_choices_do_not_review_or_execute(self):
+        at=_select_local_suggestion(_loaded())
+        _field(at,'button','Analyse').click().run()
+        _field(at,'button','Test another condition').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertNotIn('s3_suggested_review',at.session_state)
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        self.assertFalse(any(b.label=='Confirm and compare' for b in at.button))
+        _field(at,'selectbox','What would you like to change?').select('Add condition').run()
+        _field(at,'selectbox','Column').select('region').run()
+        self.assertFalse(any(b.label=='Confirm and compare' for b in at.button))
+        _field(at,'selectbox','Condition').select('eq').run()
+        self.assertFalse(any(b.label=='Confirm and compare' for b in at.button))
+        _field(at,'selectbox','Value').select_index(0).run()
+        self.assertNotIn('s3_suggested_review',at.session_state)
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+
+    def test_review_then_confirm_exact_golden_and_download(self):
+        at=_select_local_suggestion(_loaded())
+        _field(at,'button','Analyse').click().run()
+        _stage3_open_add_review(at,'region',0)
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertIn('s3_suggested_review',at.session_state)
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        self.assertTrue(any('Awaiting your confirmation' in str(x.value) for x in at.info))
+        _field(at,'button','Confirm and compare').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        result=at.session_state['last_suggested_comparison']['result']
+        self.assertEqual([(r['group_value'],r['baseline_value'],r['challenged_value'])
+                          for r in result['comparison']['all_results']],
+                         [('Coffee',3000,1200),('Snacks',1400,800)])
+        self.assertTrue(any('Coffee remains the leader' in str(x.value) for x in at.markdown))
+        _assert_download(at,'suggested_comparison','Download comparison JSON')
+        _field(at,'selectbox','Value').select_index(1).run()
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        self.assertFalse(any('Download comparison JSON'==d.label for d in at.download_button))
+
+    def test_edit_condition_returns_to_pending(self):
+        at=_select_local_suggestion(_loaded())
+        _field(at,'button','Analyse').click().run()
+        _stage3_open_add_review(at,'region',0)
+        _field(at,'button','Confirm and compare').click().run()
+        self.assertIn('last_suggested_comparison',at.session_state)
+        _field(at,'button','Edit condition').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertNotIn('s3_suggested_review',at.session_state)
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+
+    def test_repeating_submitted_local_finding_clears_confirmation(self):
+        at=_select_local_suggestion(_loaded())
+        _field(at,'button','Analyse').click().run()
+        _stage3_open_add_review(at,'region',0)
+        _field(at,'button','Confirm and compare').click().run()
+        self.assertIn('last_suggested_comparison',at.session_state)
+        _field(at,'button','Analyse').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
+
+    def test_selected_gemini_grouped_finding_can_open_challenge(self):
+        from engine import run_tool
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        grouped=run_tool(df,'grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+        response={'status':'evidence_available','answer':'Model commentary is not verified.',
+            'trace':[{'tool':'inspect_dataset','arguments':{},'result':run_tool(df,'inspect_dataset',{})},
+                     {'tool':'grouped_summary','arguments':{},'result':grouped}],
+            'calculation_verified':True,'explanation_verified':False}
+        with patch('agent.ask',return_value=response):
+            at=_loaded()
+            _field(at,'checkbox','I agree to send my question and relevant dataset information to Gemini.').check().run()
+            _field(at,'text_input','Your question').input('Find total revenue by category').run()
+            _field(at,'button','Analyse').click().run()
+            _field(at,'selectbox','Which calculated result would you like to see?').select_index(1).run()
+            self.assertFalse(at.exception,str(at.exception))
+            _stage3_open_add_review(at,'region',0)
+            self.assertNotIn('last_ai_selected_comparison',at.session_state)
+            _field(at,'button','Confirm and compare').click().run()
+            self.assertFalse(at.exception,str(at.exception))
+            self.assertEqual(at.session_state['last_ai_selected_comparison']['baseline_binding']['trace_index'],2)
+            self.assertEqual(at.session_state['last_ai_selected_comparison']['result']['status'],'completed')
+            _assert_download(at,'ai_selected_comparison','Download comparison JSON')
+            _field(at,'selectbox','Which calculated result would you like to see?').select_index(0).run()
+            self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))

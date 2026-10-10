@@ -143,28 +143,42 @@ def analysis_result(output, *, heading='Calculated result', model_tool=False, qu
 
 def comparison_result(result, *, heading='Confirmed comparison', filename='comparison.json',
                       download_location):
+    """Stage 3 answer-first comparison, with raw JSON retained verbatim."""
+    from challenge_logic import (conclusion, comparison_display_rows, definition_line,
+                                 unchanged_line)
     st.subheader(heading)
-    st.markdown('### '+comparison_summary(result))
-    st.caption('Different record-inclusion assumptions answer different questions; a changed leader does not make the original calculation incorrect.')
-    st.caption('Changed condition: '+str(result.get('changed_condition',{}).get('kind','')).title())
-    diff=result.get('changed_condition',{})
-    if diff.get('before'): st.caption('Before: '+filter_description(diff['before']))
-    if diff.get('after'): st.caption('After: '+filter_description(diff['after']))
-    a,b=st.columns(2)
-    with a:
-        source_definition(result['baseline_spec'],'Baseline · calculated')
-        accounting(result['baseline']['evidence'])
-    with b:
-        source_definition(result['challenged_spec'],'Challenge · calculated')
-        accounting(result['challenged']['evidence'])
-    st.dataframe(pd.DataFrame(comparison_table(result)),hide_index=True,use_container_width=True)
+    st.markdown('### '+conclusion(result))
+    st.caption('Changing which records are included changes the question being answered; it does not prove the original result was wrong.')
+    left,right=st.columns(2)
+    with left:
+        st.caption('Original')
+        st.markdown(definition_line(result['baseline_spec']))
+    with right:
+        st.caption('Alternative')
+        st.markdown(definition_line(result['challenged_spec']))
+    st.caption('Unchanged: '+unchanged_line(result['baseline_spec']))
+    a=result['accounting']['baseline']; b=result['accounting']['challenged']
+    st.caption(f'**Records included:** original {a["selected_rows"]:,} of {a["input_rows"]:,}; '
+               f'alternative {b["selected_rows"]:,} of {b["input_rows"]:,}. '
+               f'Excluded by conditions: {a["excluded_by_filters"]:,} and {b["excluded_by_filters"]:,}.')
+    st.dataframe(pd.DataFrame(comparison_display_rows(result),dtype=str),hide_index=True,use_container_width=True)
     c=result['comparison']
-    st.caption('Leaders based on all calculated groups, including any undisplayed groups: baseline = '
-               +(', '.join(label(v) for v in c['baseline_leaders']) or 'none')
-               +'; challenge = '+(', '.join(label(v) for v in c['challenged_leaders']) or 'none'))
+    for which,desc in [('baseline','original'),('challenged','alternative')]:
+        omissions=result['accounting'][which].get('operation_exclusions',{})
+        missing=omissions.get('missing_metric_excluded_from_values',0)
+        if missing:
+            st.warning(f'{missing:,} {desc} records had missing numeric values and were excluded from calculated values.')
+        missing_groups=omissions.get('missing_group_labels_included',0)
+        if missing_groups:
+            st.warning(f'{missing_groups:,} {desc} records have no group label; they are kept as a separate group.')
     if c['display']['truncated']:
-        st.warning(f'Comparison table truncated ({c["display"]["returned_groups"]} of {c["display"]["total_groups"]} groups). Conclusions and differences use the full result.')
-    for warning in result.get('warnings',[]): st.caption('Note: '+warning)
-    with st.expander('How this was calculated'):
+        st.warning(f'Only {c["display"]["returned_groups"]} of {c["display"]["total_groups"]} groups are shown. All groups were used for leader comparisons.')
+    with st.expander('How this was compared',expanded=False):
+        st.caption('Complete definitions, records and evidence. Exact integers and missing/absent groups are preserved in JSON.')
+        source_definition(result['baseline_spec'],'Original definition')
+        accounting(result['baseline']['evidence'])
+        source_definition(result['challenged_spec'],'Alternative definition')
+        accounting(result['challenged']['evidence'])
+        for warning in result.get('warnings',[]): st.caption('Note: '+warning)
         st.json(result)
         evidence_download(result,filename,'Download comparison JSON',location=download_location)

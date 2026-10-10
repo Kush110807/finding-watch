@@ -56,6 +56,17 @@ class DownloadKeyTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         evidence_key(location,invalid)
 
+    def test_selected_gemini_comparison_has_own_single_result_download(self):
+        # The same evidence can coexist in original AI trace and a confirmed
+        # user comparison; different rendering surfaces must remain distinct.
+        selected=evidence_key('ai_selected_comparison')
+        self.assertNotEqual(selected,evidence_key('ai_comparison'))
+        self.assertNotEqual(selected,evidence_key('suggested_comparison'))
+        self.assertNotEqual(selected,evidence_key('ai_primary_result',1))
+        self.assertEqual(selected,evidence_key('ai_selected_comparison',0))
+        with self.assertRaises(ValueError):
+            evidence_key('ai_selected_comparison',1)
+
     def test_invalid_locations_and_positions_fail_explicitly(self):
         for location,occurrence in [('unknown',0),('manual_result',1),
                                      ('ai_trace_result',0),('ai_trace_result',-1),

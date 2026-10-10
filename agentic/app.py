@@ -14,82 +14,7 @@ from stage2_logic import calculated_choices, result_selection_key, append_clarif
 ROOT=Path(__file__).resolve().parent
 
 
-def show_challenge_for_submitted_grouped(df, columns, baseline_output, baseline_binding, *,
-                                         prefix, title, button_label):
-    """An explicitly identified, submitted grouped finding is the ONLY baseline.
-
-    Source choice is never inferred from an older result; each surface has its
-    own widget and confirmation namespace to prevent accidental cross-binding.
-    """
-    if baseline_output.get('tool') != 'grouped_summary':
-        return
-    baseline_spec=baseline_output['evidence']['executed_spec']
-    store_key=f'last_{prefix}_comparison'
-    st.header('Challenge this finding')
-    st.caption('Change exactly one filter on this submitted result. The comparison runs only after confirmation.')
-    with st.expander(title,expanded=False):
-        st.caption('Baseline: '+baseline_binding['label'])
-        conditions=baseline_spec['filters']
-        options=(['Add condition'] if len(conditions)<8 else []) + (
-            ['Remove condition','Replace condition'] if conditions else [])
-        mode=st.selectbox('Change exactly one condition',options,key=f'm2_{prefix}_mode')
-        updated=[dict(item) for item in conditions]
-        index=None
-        if mode in ('Remove condition','Replace condition'):
-            index=st.selectbox('Condition to change',range(len(conditions)),
-                format_func=lambda i:f'{i+1}: {conditions[i]}',key=f'm2_{prefix}_index')
-        if mode!='Remove condition':
-            field=st.selectbox('Challenged filter column',columns,key=f'm2_{prefix}_column')
-            op=st.selectbox('Challenged filter operator',
-                ['eq','ne','gt','ge','lt','le','contains','is_missing','not_missing'],
-                key=f'm2_{prefix}_operator')
-            condition={'field':field,'operator':op}
-            if op not in ('is_missing','not_missing'):
-                condition['value']=st.text_input('Challenged filter value',key=f'm2_{prefix}_value')
-        if mode=='Add condition': updated.append(condition)
-        elif mode=='Remove condition': updated.pop(index)
-        else: updated[index]=condition
-        challenged_spec={**baseline_spec,'filters':updated}
-        try:
-            plan=prepare_comparison(df,baseline_spec,challenged_spec)
-        except AnalysisError as exc:
-            st.info('Comparison definition is not ready: '+str(exc))
-            return
-        confirmed=st.session_state.get(store_key)
-        active=confirmed_comparison_matches(confirmed,plan,baseline_binding)
-        status_notice=st.empty()
-        if active:
-            status_notice.success('CONFIRMED — this exact comparison has been calculated and approved by you.')
-        else:
-            status_notice.warning('PENDING CONFIRMATION — these definitions have not been approved or calculated together.')
-            if confirmed:
-                st.info('Challenge edits are pending. The previous comparison is hidden until this exact definition is confirmed.')
-        change=plan['changed_condition']
-        st.caption('One changed condition: '+change['kind'])
-        if change.get('before'):st.caption('Before: '+filter_description(change['before']))
-        if change.get('after'):st.caption('After: '+filter_description(change['after']))
-        source_definition(plan['baseline_spec'],'Baseline · submitted')
-        source_definition(plan['challenged_spec'],'Challenge · '+('confirmed' if active else 'pending'))
-        if st.checkbox('Show exact Challenge specifications',value=False,key=f'm2_{prefix}_show_specs'):
-            st.json(plan['baseline_spec']);st.json(plan['challenged_spec'])
-        if not active and st.button(button_label,key=f'm2_{prefix}_confirm'):
-            try:
-                result=execute_comparison(df,baseline_spec,challenged_spec,
-                    expected_fingerprint=plan['dataset_fingerprint_sha256'])
-                st.session_state[store_key]={
-                    'plan':plan,'baseline_binding':baseline_binding,'result':result}
-                # Rerun before drawing headings/definitions: the expander's
-                # earlier pending label must not survive this confirmation.
-                st.rerun()
-            except AnalysisError as exc:
-                st.error('Comparison could not be completed: '+str(exc))
-    # Outside the Challenge expander: confirmed result remains easy to find,
-    # and the evidence expander in comparison_result is not nested.
-    record=st.session_state.get(store_key)
-    if confirmed_comparison_matches(record,plan,baseline_binding):
-        comparison_result(record['result'],heading='User-confirmed Challenge',
-                          filename=f'{prefix}_comparison.json',
-                          download_location=f'{prefix}_comparison')
+from challenge_ui import show_challenge
 
 
 st.set_page_config(page_title='Finding Watch · BYTE',page_icon='📊',layout='centered',initial_sidebar_state='collapsed')
@@ -253,7 +178,9 @@ with st.sidebar:
             st.session_state.pop('last_manual_comparison',None)
             try:
                 output=run_tool(df,labels[choice],args)
-                st.session_state['last_manual']={'submission':manual_submission,'output':output}
+                st.session_state['last_manual']={'submission':manual_submission,'output':output,
+                    'submission_occurrence':st.session_state.get('stage3_submission_serial',0)+1}
+                st.session_state['stage3_submission_serial']=st.session_state['last_manual']['submission_occurrence']
             except AnalysisError as exc:
                 st.session_state.pop('last_manual',None)
                 st.error(str(exc))
@@ -267,11 +194,11 @@ with st.sidebar:
                                 download_location='manual_result')
         # M2 Challenge always binds to the specific submitted output, not controls.
         if (manual_current and saved_manual['output']['tool']=='grouped_summary'):
-            show_challenge_for_submitted_grouped(df,cols,saved_manual['output'],
+            show_challenge(df,saved_manual['output'],
                 {'kind':'manual','dataset':source_hash,'submission':saved_manual['submission'],
-                 'label':'Manual calculation submitted with the settings above'},
-                prefix='manual',title='Challenge this submitted grouped finding',
-                button_label='Run confirmed manual comparison')
+                 'label':'Manual calculation submitted with the settings above',
+                 'occurrence':saved_manual.get('submission_occurrence')},
+                prefix='manual')
 
 
 # Explicitly identified approved grouped results may be used as a model follow-up.
@@ -329,7 +256,8 @@ if submit:
                 st.session_state.pop('stage1_provider_error',None)
                 output=run_tool(df,suggested['tool'],suggested['arguments'])
                 st.session_state['stage1_local_answer']={
-                    'fingerprint':source_hash,'question':q,'spec':suggested,'output':output}
+                    'fingerprint':source_hash,'question':q,'spec':suggested,'output':output,
+                    'submission_occurrence':st.session_state['stage2_response_serial']}
             except AnalysisError as exc:
                 st.session_state.pop('stage1_local_answer',None)
                 st.error('Could not complete this calculation: '+str(exc))
@@ -359,11 +287,11 @@ if local and local['fingerprint']==source_hash:
     else:
         analysis_result(local['output'],heading='Your calculated finding',download_location='stage1_local_result')
         if local['output']['tool']=='grouped_summary':
-            show_challenge_for_submitted_grouped(df,cols,local['output'],
+            show_challenge(df,local['output'],
                 {'kind':'suggested','dataset':source_hash,'question':question,'spec':local['spec'],
-                 'label':'Submitted local finding: '+question[:120]},
-                prefix='suggested',title='Challenge this grouped finding',
-                button_label='Run confirmed comparison')
+                 'label':'Submitted local finding: '+question[:120],
+                 'occurrence':local.get('submission_occurrence')},
+                prefix='suggested')
 saved=st.session_state.get('last_answer')
 if saved and saved['dataset_fingerprint']!=source_hash:
     st.session_state.pop('last_answer',None)
@@ -408,7 +336,9 @@ if saved:
                         output=run_tool(df,'grouped_summary',definition)
                         st.session_state['last_clarified']={
                             'dataset_fingerprint':source_hash,'submitted_question':submitted,
-                            'chosen':definition,'output':output}
+                            'chosen':definition,'output':output,
+                            'submission_occurrence':st.session_state.get('stage3_submission_serial',0)+1}
+                        st.session_state['stage3_submission_serial']=st.session_state['last_clarified']['submission_occurrence']
                     except AnalysisError as exc:
                         st.session_state.pop('last_clarified',None);st.error(str(exc))
             clarified=st.session_state.get('last_clarified')
@@ -423,12 +353,12 @@ if saved:
                         heading='Calculated from your explicit definition',
                         download_location='clarified_result')
                     if clarified['output']['tool']=='grouped_summary':
-                        show_challenge_for_submitted_grouped(df,cols,clarified['output'],
+                        show_challenge(df,clarified['output'],
                             {'kind':'clarified','dataset':source_hash,'question':submitted,
                              'chosen':clarified['chosen'],
-                             'label':'Explicitly clarified answer to: '+submitted[:120]},
-                            prefix='clarified',title='Challenge this clarified grouped finding',
-                            button_label='Run confirmed clarified comparison')
+                             'label':'Explicitly clarified answer to: '+submitted[:120],
+                             'occurrence':clarified.get('submission_occurrence')},
+                            prefix='clarified')
                 else:
                     st.warning('Pending clarification edits — the previous calculation and Challenge are hidden until you submit.')
         elif method=='Explain the missing context (dates or other details)':
@@ -512,6 +442,11 @@ if saved:
             analysis_result(event['result'],heading='Calculated finding',model_tool=True,
                             download_location='ai_primary_result',download_occurrence=index)
             st.session_state['last_visible_ai_trace_index']=index
+            if event['result'].get('tool')=='grouped_summary':
+                show_challenge(df,event['result'],
+                    {'kind':'gemini','dataset':source_hash,'question':submitted,
+                     'trace_index':index,'response_occurrence':st.session_state.get('stage2_response_serial',0),
+                     'label':f'Selected Gemini calculation {index}'},prefix='ai_selected')
         else:
             st.session_state.pop('last_visible_ai_trace_index',None)
         with st.expander('Other calculations and execution details',expanded=False):

@@ -18,6 +18,7 @@ _LOCATIONS = frozenset({
     'ai_primary_result',
     'ai_support_result',
     'suggested_comparison',
+    'ai_selected_comparison',
 })
 
 
