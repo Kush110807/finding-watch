@@ -235,10 +235,16 @@ class M2ChallengeAppTests(unittest.TestCase):
             self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
             self.assertEqual(result['status'],'completed')
             self.assertFalse(any('not calculated' in str(x.value).lower() for x in at.warning))
-            self.assertTrue(any('Completed comparison' in str(x.value) for x in at.markdown))
+            self.assertTrue(any('Confirmed Challenge' in x.value for x in at.subheader))
+            self.assertTrue(any('User-confirmed comparison' in x.value for x in at.subheader))
+            self.assertTrue(any('CONFIRMED' in x.value for x in at.success))
+            _assert_download(at,'ai_comparison','Download comparison JSON')
+            self.assertFalse(any('pending' in str(x.value).lower() for x in at.warning))
             self.widget(at,'text_input','Your question').input('Some other question').run()
             self.assertFalse(at.exception)
+            self.assertFalse(any('User-confirmed comparison' in x.value for x in at.subheader))
             self.assertFalse(any(b.label=='Confirm and run proposed comparison' for b in at.button))
+            self.assertFalse(any(b.label=='Download comparison JSON' for b in at.download_button))
 
 class P1P3UiAppTests(unittest.TestCase):
     """Requires Streamlit + pinned google-genai; never makes live provider calls."""
@@ -444,7 +450,7 @@ class DuplicateDownloadAppTests(unittest.TestCase):
         self.assertEqual(len(at.session_state['last_answer']['response']['trace']),2)
         self.assertGreaterEqual(len(at.dataframe),1)
         self.assertTrue(any(w.label=='Which calculated result would you like to see?' for w in at.selectbox))
-        _field(at,'selectbox','Which calculated result would you like to see?').select_index(0).run()
+        _field(at,'selectbox','Which calculated result would you like to see?').select_index(1).run()
         self.assertEqual(at.session_state['last_visible_ai_trace_index'],1)
         _assert_download(at,'ai_primary_result','Download original result JSON',1)
         _assert_download(at,'ai_support_result','Download this tool result JSON',1)
@@ -609,7 +615,7 @@ class Stage1DownloadLocationAppTests(unittest.TestCase):
         _field(at,'button','Analyse').click().run()
         self.assertFalse(at.exception,str(at.exception))
         self.assertEqual(at.session_state['stage1_local_answer']['output']['tool'],'grouped_summary')
-        _assert_download(at,'stage1_profile','Download original result JSON')
+        _assert_download(at,'stage1_profile','Download complete, unmodified calculation evidence')
         _assert_download(at,'stage1_local_result','Download original result JSON')
         self.assertTrue(any('How this was calculated'==e.label for e in at.get('expander')))
         self.assertEqual([(r['group_value'],r['value'])
@@ -658,7 +664,9 @@ class Stage1DownloadLocationAppTests(unittest.TestCase):
         at=self._ask(_loaded(),[event,event],'Show both calculations')
         self.assertTrue(any('Which calculated result would you like to see?'==s.label for s in at.selectbox))
         chooser=_field(at,'selectbox','Which calculated result would you like to see?')
-        chooser.select_index(1).run()
+        self.assertEqual(chooser.value,'Choose a calculation')
+        self.assertFalse(any(x.value=='Calculated finding' for x in at.subheader))
+        chooser.select_index(2).run()
         self.assertFalse(at.exception,str(at.exception))
         self.assertEqual(at.session_state['last_visible_ai_trace_index'],2)
         self.assertEqual(len(at.session_state['last_answer']['response']['trace']),2)
@@ -777,8 +785,10 @@ class Stage2AppTests(unittest.TestCase):
         at=self.ask_screen(self.response(one,one,two))
         self.assertFalse(at.exception)
         picker=_field(at,'selectbox','Which calculated result would you like to see?')
-        self.assertEqual(len(picker.options),3)
-        picker.select_index(1).run()
+        self.assertEqual(len(picker.options),4)  # neutral choice + three trace occurrences
+        self.assertEqual(picker.value,'Choose a calculation')
+        self.assertFalse(any(x.value=='Calculated finding' for x in at.subheader))
+        picker.select_index(2).run()
         self.assertFalse(at.exception)
         self.assertTrue(any('Calculated finding' in x.value for x in at.subheader))
         self.assertTrue(any(b.label=='Download original result JSON' for b in at.download_button))
@@ -796,10 +806,12 @@ class Stage2AppTests(unittest.TestCase):
             _field(at,'text_input','Your question').input('Compare totals').run()
             _field(at,'button','Analyse').click().run()
             picker=_field(at,'selectbox','Which calculated result would you like to see?')
-            picker.select_index(0).run()
+            picker.select_index(1).run()
             self.assertEqual(at.session_state['last_visible_ai_trace_index'],1)
             _field(at,'button','Analyse').click().run()
             self.assertFalse(at.exception)
+            self.assertEqual(_field(at,'selectbox','Which calculated result would you like to see?').value,
+                             'Choose a calculation')
             self.assertFalse(any(x.value=='Calculated finding' for x in at.subheader))
 
     def test_contextual_followups_retain_prior_context_without_calculating_from_choice(self):
@@ -905,20 +917,51 @@ class Stage3ChallengeAppTests(unittest.TestCase):
         self.assertNotIn('last_suggested_comparison',at.session_state)
         self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
 
+    def test_inspection_and_single_grouped_finding_opens_challenge_without_picker(self):
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        inspection=run_tool(df,'inspect_dataset',{})
+        grouped=run_tool(df,'grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+        response={'status':'evidence_available','answer':'Not independently verified.',
+                  'trace':[{'tool':'inspect_dataset','arguments':{},'result':inspection},
+                           {'tool':'grouped_summary','arguments':grouped['evidence']['executed_spec']['arguments'],
+                            'result':grouped}],
+                  'calculation_verified':True,'explanation_verified':False}
+        with patch('agent.ask',return_value=response):
+            at=_loaded()
+            _field(at,'checkbox','I agree to send my question and relevant dataset information to Gemini.').check().run()
+            _field(at,'text_input','Your question').input('Which category has the most revenue?').run()
+            _field(at,'button','Analyse').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertFalse(any(s.label=='Which calculated result would you like to see?' for s in at.selectbox))
+        self.assertEqual(at.session_state['last_visible_ai_trace_index'],2)
+        _assert_download(at,'ai_primary_result','Download original result JSON',2)
+        _assert_download(at,'ai_support_result','Download this tool result JSON',1)
+        _stage3_open_add_review(at,'region',0)
+        self.assertNotIn('last_ai_selected_comparison',at.session_state)
+        _field(at,'button','Confirm and compare').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['last_ai_selected_comparison']['baseline_binding']['trace_index'],2)
+        _assert_download(at,'ai_selected_comparison','Download comparison JSON')
+
     def test_selected_gemini_grouped_finding_can_open_challenge(self):
         from engine import run_tool
         df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
         grouped=run_tool(df,'grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+        alternate=run_tool(df,'grouped_summary',{'group':'region','metric':'revenue','operation':'sum'})
         response={'status':'evidence_available','answer':'Model commentary is not verified.',
             'trace':[{'tool':'inspect_dataset','arguments':{},'result':run_tool(df,'inspect_dataset',{})},
-                     {'tool':'grouped_summary','arguments':{},'result':grouped}],
+                     {'tool':'grouped_summary','arguments':grouped['evidence']['executed_spec']['arguments'],'result':grouped},
+                     {'tool':'grouped_summary','arguments':alternate['evidence']['executed_spec']['arguments'],'result':alternate}],
             'calculation_verified':True,'explanation_verified':False}
         with patch('agent.ask',return_value=response):
             at=_loaded()
             _field(at,'checkbox','I agree to send my question and relevant dataset information to Gemini.').check().run()
             _field(at,'text_input','Your question').input('Find total revenue by category').run()
             _field(at,'button','Analyse').click().run()
-            _field(at,'selectbox','Which calculated result would you like to see?').select_index(1).run()
+            chooser=_field(at,'selectbox','Which calculated result would you like to see?')
+            self.assertEqual(len(chooser.options),3)
+            self.assertEqual(chooser.value,'Choose a calculation')
+            chooser.select_index(1).run()
             self.assertFalse(at.exception,str(at.exception))
             _stage3_open_add_review(at,'region',0)
             self.assertNotIn('last_ai_selected_comparison',at.session_state)
@@ -927,8 +970,18 @@ class Stage3ChallengeAppTests(unittest.TestCase):
             self.assertEqual(at.session_state['last_ai_selected_comparison']['baseline_binding']['trace_index'],2)
             self.assertEqual(at.session_state['last_ai_selected_comparison']['result']['status'],'completed')
             _assert_download(at,'ai_selected_comparison','Download comparison JSON')
-            _field(at,'selectbox','Which calculated result would you like to see?').select_index(0).run()
+            _field(at,'selectbox','Which calculated result would you like to see?').select_index(2).run()
+            self.assertFalse(at.exception,str(at.exception))
+            self.assertNotIn('last_ai_selected_comparison',at.session_state)
             self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
+            self.assertFalse(any('User-confirmed Challenge' in x.value for x in at.subheader))
+            self.assertEqual(at.session_state['last_visible_ai_trace_index'],3)
+            _assert_download(at,'ai_primary_result','Download original result JSON',3)
+            _assert_download(at,'ai_support_result','Download this tool result JSON',1)
+            _field(at,'selectbox','Which calculated result would you like to see?').select_index(0).run()
+            self.assertNotIn('last_ai_selected_comparison',at.session_state)
+            self.assertNotIn('last_visible_ai_trace_index',at.session_state)
+            self.assertFalse(any('User-confirmed Challenge' in x.value for x in at.subheader))
 
 class Stage3ContainsTextAppTests(unittest.TestCase):
     """Actual Streamlit AppTests (requires installed Streamlit and Gemini SDK)."""

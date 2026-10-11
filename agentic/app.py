@@ -431,11 +431,10 @@ if saved:
             st.info('Several calculations completed. Choose which definition to inspect; no result is automatically treated as the intended answer.')
             selection_key=result_selection_key(source_hash,submitted,answer,
                 st.session_state.get('stage2_response_serial',0))
-            selected_position=st.selectbox('Which calculated result would you like to see?',
-                [c['position'] for c in choices],index=None,
-                format_func=lambda pos:next((c['label'] for c in choices if c['position']==pos), 'Choose a calculation'),
-                placeholder='Select a calculated definition',key=selection_key)
-            matching=next((c for c in choices if c['position']==selected_position),None)
+            options=result_option_map(choices)
+            selected_label=st.selectbox('Which calculated result would you like to see?',
+                list(options),index=0,key=selection_key)
+            matching=options[selected_label]
             chosen=(matching['position'],matching['event']) if matching else None
         if chosen:
             index,event=chosen
@@ -449,6 +448,11 @@ if saved:
                      'label':f'Selected Gemini calculation {index}'},prefix='ai_selected')
         else:
             st.session_state.pop('last_visible_ai_trace_index',None)
+            # Returning to the explicit neutral option revokes any selection-
+            # bound approval, including a Challenge from the same trace entry.
+            st.session_state.pop('last_ai_selected_comparison',None)
+            st.session_state.pop('s3_ai_selected_review',None)
+            st.session_state.pop('s3_ai_selected_context',None)
         with st.expander('Other calculations and execution details',expanded=False):
             st.caption('These are executed operations, not independent proof that the model understood your intent.')
             for i,event in enumerate(answer.get('trace',[]),1):

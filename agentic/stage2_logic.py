@@ -37,6 +37,28 @@ def calculated_choices(trace):
     return choices
 
 
+# Keep the unselected option in the actual Streamlit widget choices.
+# Streamlit 1.64.0 AppTest serializes displayed strings and can otherwise
+# confuse a formatted integer option with the unselected placeholder.
+RESULT_CHOICE_PROMPT = 'Choose a calculation'
+
+
+def result_option_map(choices):
+    """Unique, human-readable options bound to original 1-based trace positions.
+
+    No result is picked by default.  Repeated identical calculations remain
+    distinct because the trace occurrence is part of every label.
+    """
+    options={RESULT_CHOICE_PROMPT: None}
+    for choice in choices:
+        if not isinstance(choice.get('position'),int) or choice['position'] < 1:
+            raise ValueError('Calculation trace positions must be positive integers.')
+        label=choice['label']
+        if not isinstance(label,str) or not label.strip() or label in options:
+            raise ValueError('Calculation choices require distinct readable labels.')
+        options[label]=choice
+    return options
+
 def result_selection_key(dataset,question,response,serial=0):
     """Scope a selection to one dataset, original question and exact response.
 
@@ -45,7 +67,7 @@ def result_selection_key(dataset,question,response,serial=0):
     """
     document=json.dumps([dataset,question,response,serial],sort_keys=True,
                         ensure_ascii=False,default=str,allow_nan=False)
-    return 'stage2_result_choice_'+hashlib.sha256(document.encode()).hexdigest()[:20]
+    return 'stage2_result_choice_v2_'+hashlib.sha256(document.encode()).hexdigest()[:20]
 
 
 def append_clarification_context(existing, new, max_chars=2000):

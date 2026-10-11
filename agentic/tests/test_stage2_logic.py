@@ -5,7 +5,8 @@ import unittest
 from datetime import datetime
 import pandas as pd
 from engine import load_csv, run_tool, AnalysisError
-from stage2_logic import calculated_choices, result_selection_key, append_clarification_context, response_failure_kind
+from stage2_logic import (calculated_choices, result_option_map, RESULT_CHOICE_PROMPT,
+                          result_selection_key, append_clarification_context, response_failure_kind)
 from presentation import summary, visible_result_rows, important_notices, observed_period_label, chart_safe
 
 DEMO=b'date,category,region,revenue,units\n2026-01-01,Coffee,North,1200,40\n2026-01-02,Snacks,South,600,30\n2026-02-01,Coffee,South,1800,60\n2026-02-02,Snacks,North,800,40\n'
@@ -109,6 +110,37 @@ class Stage2State(unittest.TestCase):
         self.assertEqual([c['position'] for c in choices],[1,2])
         self.assertNotEqual(choices[0]['label'],choices[1]['label'])
         self.assertEqual(choices[0]['event']['result'],choices[1]['event']['result'])
+
+    def test_selectbox_options_are_plain_unique_strings_with_neutral_initial_choice(self):
+        trace=[{'tool':'grouped_summary','result':self.group},
+               {'tool':'grouped_summary','result':self.group}]
+        choices=calculated_choices(trace)
+        options=result_option_map(choices)
+        self.assertEqual(list(options)[0],RESULT_CHOICE_PROMPT)
+        self.assertIsNone(options[RESULT_CHOICE_PROMPT])
+        self.assertEqual([entry['position'] for entry in list(options.values())[1:]],[1,2])
+        self.assertEqual(len(options),3)
+        self.assertNotEqual(list(options)[1],list(options)[2])
+        self.assertTrue(all(isinstance(x,str) for x in options))
+        self.assertEqual(options[list(options)[1]]['event']['result'],
+                         options[list(options)[2]]['event']['result'])
+
+    def test_option_map_preserves_unfiltered_original_trace_positions(self):
+        choices=calculated_choices([{'tool':'inspect_dataset','result':self.inspect},
+                                    {'tool':'grouped_summary','result':self.group},
+                                    {'tool':'grouped_summary','result':self.group}])
+        options=result_option_map(choices)
+        self.assertEqual([c['position'] for c in list(options.values())[1:]],[2,3])
+        self.assertIsNone(options[RESULT_CHOICE_PROMPT])
+
+    def test_reject_invalid_or_ambiguous_option_mapping(self):
+        samples=([{'position':0,'label':'Bad','event':{}}],
+                 [{'position':1,'label':'X','event':{}},{'position':2,'label':'X','event':{}}],
+                 [{'position':1,'label':RESULT_CHOICE_PROMPT,'event':{}}],
+                 [{'position':1,'label':'','event':{}}])
+        for sample in samples:
+            with self.subTest(sample=sample), self.assertRaises(ValueError):
+                result_option_map(sample)
 
     def test_definition_labels_expose_filters_and_periods(self):
         df=load_csv(DEMO)
