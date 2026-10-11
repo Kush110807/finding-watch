@@ -78,3 +78,10 @@ These are calculations from the CSV, not hard-coded answers. The smaller `agenti
 - [BYTE requirements and release checklist](agentic/docs/RELEASE_CHECKLIST.md)
 
 Official BYTE task: <https://bytesoc.dev/tasks/applied-ml/>. The published deadline is **13 October 2026, 11:59 PM IST**. Submit a **public GitHub repository and README**; a short video and/or hosted demo are strongly preferred. Finding Watch is **one task**; any other required task must be submitted separately. **No public repository, hosted URL or submission is claimed in this release.**
+
+### Provider pacing and recovery
+
+Gemini requests are spaced across Streamlit sessions within one Python process,
+with capped, status-aware retries and safe diagnostics. See
+[`agentic/docs/GEMINI_RELIABILITY_REPAIR.md`](agentic/docs/GEMINI_RELIABILITY_REPAIR.md).
+This does not increase project quota or guarantee Google service availability.

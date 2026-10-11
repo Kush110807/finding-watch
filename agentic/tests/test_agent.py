@@ -3,6 +3,7 @@ from unittest.mock import patch
 from google.genai import types
 from engine import load_csv
 from agent import execute, AgentError, safe_error, configuration, DECLARATIONS
+from provider_reliability import ProviderFailure
 
 def response(*parts):
     return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(role='model',parts=list(parts)))])
@@ -30,6 +31,43 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(out['calculation_verified'])
         self.assertEqual(out['question'],'Highest revenue category?')
         self.assertEqual(len(out['trace']),1)
+    def test_failed_followup_preserves_tool_trace_but_no_verified_answer(self):
+        first=call('grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+        requests=[]
+        def generate(contents):
+            requests.append(len(contents))
+            if len(requests)==1: return first
+            raise ProviderFailure('provider_transient',503,2,33)
+        out=execute(self.df,'Total by category?',generate)
+        self.assertEqual(requests,[1,3])
+        self.assertEqual(len(out['trace']),1)
+        self.assertEqual(out['trace'][0]['result']['rows'][0]['value'],30)
+        self.assertEqual(out['status'],'error')
+        self.assertFalse(out['calculation_verified'])
+        self.assertFalse(out['explanation_verified'])
+        self.assertEqual(out['provider_diagnostic'],{
+            'category':'provider_transient','http_status':503,'attempts':2,
+            'elapsed_seconds':33,'partial_tools_completed':True})
+        self.assertNotIn('answered',out)
+    def test_failure_before_any_tool_has_no_partial_flag(self):
+        out=execute(self.df,'What is this?',lambda _ : (_ for _ in ()).throw(
+            ProviderFailure('daily_quota',429,1,1.4)))
+        self.assertEqual(out['status'],'error')
+        self.assertFalse(out['provider_diagnostic']['partial_tools_completed'])
+        self.assertEqual(out['trace'],[])
+    def test_client_disables_sdk_retries_and_sets_timeout(self):
+        from agent import client_for
+        with patch('agent.genai.Client') as client:
+            client_for('PRIVATE_KEY',timeout_ms=12345)
+        opts=client.call_args.kwargs['http_options']
+        self.assertEqual(opts.timeout,12345)
+        self.assertEqual(opts.retry_options.attempts,1)
+    def test_client_init_does_not_leak_key(self):
+        from agent import client_for
+        with patch('agent.genai.Client',side_effect=RuntimeError('PRIVATE_KEY')):
+            with self.assertRaises(AgentError) as cm: client_for('PRIVATE_KEY')
+        self.assertNotIn('PRIVATE_KEY',str(cm.exception))
+
     def test_malformed_model_filter_remains_unverified(self):
         sequence=iter([call('grouped_summary',{'group':'category','metric':'revenue',
             'operation':'sum','filters':[{'field':'category','operator':[],

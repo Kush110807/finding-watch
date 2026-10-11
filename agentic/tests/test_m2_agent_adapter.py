@@ -126,6 +126,33 @@ class AdapterTests(unittest.TestCase):
                     self.agent.execute(self.df,'Valid original question',lambda _:None,
                                        clarification_context=malformed)
 
+    def test_provider_failure_after_successful_tool_keeps_incomplete_trace_without_replaying(self):
+        ProviderFailure=self.agent.ProviderFailure
+        calls=[]
+        def generate(contents):
+            calls.append(len(contents))
+            if len(calls)==1:
+                return self.fc('grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+            raise ProviderFailure('provider_transient',503,2,21)
+        result=self.agent.execute(self.df,'Sum by category',generate)
+        self.assertEqual(calls,[1,3])
+        self.assertEqual(result['status'],'error')
+        self.assertEqual(len(result['trace']),1)
+        self.assertEqual(result['trace'][0]['tool'],'grouped_summary')
+        self.assertFalse(result['calculation_verified'])
+        self.assertFalse(result['explanation_verified'])
+        self.assertEqual(result['provider_diagnostic']['attempts'],2)
+        self.assertTrue(result['provider_diagnostic']['partial_tools_completed'])
+
+    def test_initial_provider_daily_quota_returns_safe_unverified_error(self):
+        ProviderFailure=self.agent.ProviderFailure
+        result=self.agent.execute(self.df,'What leads?',lambda _: (_ for _ in ()).throw(
+            ProviderFailure('daily_quota',429,1,1.0)))
+        self.assertEqual(result['status'],'error')
+        self.assertEqual(result['trace'],[])
+        self.assertFalse(result['provider_diagnostic']['partial_tools_completed'])
+        self.assertIn('daily',result['answer'])
+
     def test_five_existing_tools_remain_distinct(self):
         from engine import TOOLS
         self.assertEqual(set(TOOLS),{'inspect_dataset','filter_rows','grouped_summary','time_trend','correlation'})

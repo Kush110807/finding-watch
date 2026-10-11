@@ -1,6 +1,7 @@
 """Bounded Gemini tool loop. Calculations stay in engine.py."""
 import json
 import os
+import time
 from pathlib import Path
 from collections.abc import Mapping
 from dotenv import dotenv_values
@@ -8,6 +9,8 @@ from google import genai
 from google.genai import types
 from engine import AnalysisError, run_tool, numeric_columns, dataset_fingerprint
 from comparisons import prepare_comparison
+from provider_reliability import (RetryPolicy, ProviderFailure, classify, MESSAGES,
+                                  invoke_with_retries)
 
 DEFAULT_MODEL = 'gemini-3.8-flash'
 MAX_CALLS = 8
@@ -23,29 +26,32 @@ def configuration():
     return key, model
 
 def safe_error(exc):
-    code = getattr(exc, 'code', None)
-    messages = {400:'Request rejected. Check the key, model and tool compatibility.',
-        401:'Authentication failed. Check your local API key.',
-        403:'Access denied. Check API permissions and account availability.',
-        404:'Model unavailable. Use Check available models and choose an available text model.',
-        429:'Quota or rate limit reached. Check AI Studio usage and quota before retrying.',
-        500:'Gemini service error. Retry later.',503:'Gemini is temporarily unavailable. Retry later.'}
-    return messages.get(code,'Connection or model request failed. Check your internet connection and account settings.')
+    # SDK exception strings/details can contain raw request content.
+    if isinstance(exc, ProviderFailure):
+        return str(exc)
+    category, _, _ = classify(exc)
+    return MESSAGES[category]
 
-def client_for(key):
+
+def client_for(key, *, timeout_ms=30000):
     if not key:
         raise AgentError('No API key found. Save GEMINI_API_KEY in agentic/.env.')
     # Do not print raw SDK errors: they may contain request or credential details.
-    return genai.Client(api_key=key,http_options=types.HttpOptions(timeout=30000,
-        retry_options=types.HttpRetryOptions(attempts=1)))
-
-def available_models():
-    key,_=configuration()
-    client=client_for(key)
     try:
-        return sorted(m.name.removeprefix('models/') for m in client.models.list()
+        return genai.Client(api_key=key,http_options=types.HttpOptions(timeout=timeout_ms,
+            retry_options=types.HttpRetryOptions(attempts=1)))
+    except Exception:
+        raise AgentError('Gemini client setup failed. Check your private configuration.') from None
+
+def available_models(*, progress=None):
+    key,_=configuration()
+    policy=RetryPolicy.from_environment()
+    client=client_for(key,timeout_ms=policy.timeout_ms)
+    try:
+        results=invoke_with_retries(lambda: list(client.models.list()),policy=policy,notify=progress)
+        return sorted(m.name.removeprefix('models/') for m in results
                       if m.name and 'generateContent' in (m.supported_actions or []))
-    except Exception as exc:
+    except ProviderFailure as exc:
         raise AgentError(safe_error(exc)) from None
     finally:
         client.close()
@@ -93,7 +99,7 @@ Never fabricate results, invent column names or execute code. For dataset factua
 Use request_clarification when metric, group, date format, comparison, or meaning is ambiguous. A question such as 'best-selling product' needs both an ACTUAL grouping column (ask if product data is absent) and an explicit choice of revenue, units/quantity, or record count where those metrics exist. Never silently substitute a category for a missing product column or infer that counting records means orders or units sold. Do not silently reinterpret IDs as numbers.
 Five analytical tools are read-only. propose_grouped_comparison is a proposal-only workflow, NOT an analytical tool; it NEVER computes until explicit UI confirmation. Only propose when precisely one filter is added, removed or replaced and group/metric/operation are identical. The baseline definition supplied by the application, if any, is authoritative. Without a baseline, clarify or propose both complete definitions. A different leader under changed inclusion does not mean the original finding was wrong. Filters on grouped_summary, time_trend and correlation are combined with AND and applied to the FULL original dataset before computation. filter_rows only previews rows, and is never a source for aggregate arithmetic.
 Never claim that an unrelated successful tool establishes the requested answer. If tools fail, say the calculation could not be completed.
-No forecasting, significance tests, causal inference, arbitrary expressions or derived metrics are supported.
+No forecasting, significance tests, causal inference, arbitrary expressions or derived metrics are supported. For a question demanding such unsupported results, call request_clarification to explain the limitation and suggest a supported descriptive question; do not fabricate the forecast or causal proof.
 The returned evidence contains the executed specification, row counts and missing-value exclusions. Use only its actual results for numeric claims.
 A date format must be explicit. If dates like 01/02/2026 are ambiguous, ask for clarification. If separate user-provided clarification context is supplied, apply it only to the unchanged original question, and still use validated tool calls for any calculation; do not treat clarification prose as executable specifications.
 Explain results with tool names and relevant caveats. Do not invent derived percentages. Questions are independent except when a submitted grouped baseline is explicitly provided for a proposed challenge.
@@ -116,8 +122,19 @@ def execute(df,question,generate,*,baseline_spec=None,clarification_context=None
     for _ in range(MAX_ROUNDS):
         try:
             response=generate(contents)
+        except ProviderFailure as exc:
+            exc.partial = bool(trace)
+            return {'status':'error','answer':safe_error(exc),'trace':trace,'question':question,
+                    'dataset_fingerprint_sha256':fingerprint,'provider_diagnostic':exc.diagnostic(),
+                    'calculation_verified':False,'explanation_verified':False}
         except Exception as exc:
-            return {'status':'error','answer':safe_error(exc),'trace':trace,'question':question,'dataset_fingerprint_sha256':fingerprint}
+            category, code, _ = classify(exc)
+            return {'status':'error','answer':safe_error(exc),'trace':trace,'question':question,
+                    'dataset_fingerprint_sha256':fingerprint,
+                    'provider_diagnostic':{'category':category,'http_status':code,
+                                           'attempts':1,'elapsed_seconds':None,
+                                           'partial_tools_completed':bool(trace)},
+                    'calculation_verified':False,'explanation_verified':False}
         if not response.candidates or not response.candidates[0].content:
             return {'status':'error','answer':'The model returned no usable response. Try a clearer question.','trace':trace,'question':question,'dataset_fingerprint_sha256':fingerprint}
         content=response.candidates[0].content
@@ -199,15 +216,29 @@ def execute(df,question,generate,*,baseline_spec=None,clarification_context=None
         contents.append(types.Content(role='user',parts=replies))
     return {'status':'limited','answer':'Model round limit reached. Ask a narrower question.','trace':trace,'question':question,'dataset_fingerprint_sha256':fingerprint}
 
-def ask(df,question,*,baseline_spec=None,clarification_context=None):
+def ask(df,question,*,baseline_spec=None,clarification_context=None,progress=None):
     key,model=configuration()
-    client=client_for(key)
+    policy=RetryPolicy.from_environment()
+    client=client_for(key,timeout_ms=policy.timeout_ms)
     config=types.GenerateContentConfig(system_instruction=SYSTEM,
         tools=[types.Tool(function_declarations=DECLARATIONS)],
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         max_output_tokens=2048)
+    analysis_deadline=time.monotonic()+policy.analysis_budget
+    provider_requests_sent=0
+    def request_guard():
+        nonlocal provider_requests_sent
+        if provider_requests_sent>=policy.max_requests_per_analysis:
+            return False
+        provider_requests_sent+=1
+        return True
     try:
-        return {**execute(df,question,lambda contents:client.models.generate_content(
-            model=model,contents=contents,config=config),baseline_spec=baseline_spec,clarification_context=clarification_context),'model':model}
+        def generate(contents):
+            return invoke_with_retries(
+                lambda:client.models.generate_content(model=model,contents=contents,config=config),
+                policy=policy,analysis_deadline=analysis_deadline,notify=progress,
+                request_guard=request_guard)
+        return {**execute(df,question,generate,baseline_spec=baseline_spec,
+                          clarification_context=clarification_context),'model':model}
     finally:
         client.close()

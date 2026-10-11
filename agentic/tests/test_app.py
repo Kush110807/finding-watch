@@ -884,6 +884,31 @@ class Stage2AppTests(unittest.TestCase):
                              'Choose a calculation')
             self.assertFalse(any(x.value=='Calculated finding' for x in at.subheader))
 
+    def test_provider_partial_response_hides_prior_answer_and_shows_safe_diagnostics(self):
+        from agent import AgentError
+        grouped=self.evidence('grouped_summary',{'group':'category','operation':'sum','metric':'revenue'})
+        partial={'status':'error', 'answer':'Gemini returned a temporary service or gateway error.',
+                 'trace':[{'tool':'grouped_summary','result':grouped}],
+                 'calculation_verified':False, 'explanation_verified':False,
+                 'provider_diagnostic':{'category':'provider_transient','http_status':503,
+                                        'attempts':2,'elapsed_seconds':33,
+                                        'partial_tools_completed':True}}
+        with patch('agent.ask',side_effect=[self.response(grouped),partial]) as mocked:
+            at=_loaded()
+            _field(at,'checkbox','I agree to send my question and relevant dataset information to Gemini.').check().run()
+            _field(at,'text_input','Your question').input('First analysis').run()
+            _field(at,'button','Analyse').click().run()
+            self.assertTrue(any('Coffee leads' in m.value for m in at.markdown))
+            _field(at,'text_input','Your question').input('Second analysis').run()
+            _field(at,'button','Analyse').click().run()
+            self.assertFalse(at.exception,str(at.exception))
+            self.assertEqual(mocked.call_count,2)
+            self.assertEqual(at.session_state['stage1_question'],'Second analysis')
+            self.assertFalse(any('Coffee leads' in m.value for m in at.markdown))
+            self.assertFalse(any(h.value=='Calculated finding' for h in at.subheader))
+            self.assertTrue(any('Gemini could not complete' in e.value for e in at.error))
+            self.assertFalse(any(d.label=='Download original result JSON' for d in at.download_button))
+
     def test_contextual_followups_retain_prior_context_without_calculating_from_choice(self):
         clarification={'status':'clarification','answer':'Date format?','trace':[],
                        'calculation_verified':False,'explanation_verified':False}

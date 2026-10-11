@@ -123,6 +123,27 @@ with st.expander('Gemini connection and consent · optional',expanded=False):
     st.caption('To change the model, edit GEMINI_MODEL privately and restart. Model listing does not prove live inference.')
     consent=st.checkbox('I agree to send my question and relevant dataset information to Gemini.',key='gemini_consent')
 
+def gemini_with_feedback(frame, submitted, *, baseline_spec=None, clarification_context=None):
+    # A single Streamlit session cannot queue a second submission while its
+    # first synchronous provider request is running. Cross-session requests
+    # share the process-wide monotonic pacer in provider_reliability.py.
+    if st.session_state.get('gemini_busy'):
+        raise AgentError('A Gemini request is already in progress for this session.')
+    st.session_state['gemini_busy']=True
+    progress_box=st.empty()
+    def progress(event):
+        if event.get('event') == 'waiting':
+            progress_box.info(f"Waiting {event['seconds']:g}s for Gemini request capacity…")
+        elif event.get('event') == 'retrying':
+            progress_box.info(f"Gemini request was interrupted ({event.get('http_status') or 'connection'}); "
+                              f"retrying after {event['seconds']:g}s (attempt {event['attempt']})…")
+    try:
+        return ask(frame,submitted,baseline_spec=baseline_spec,
+                   clarification_context=clarification_context,progress=progress)
+    finally:
+        progress_box.empty()
+        st.session_state['gemini_busy']=False
+
 # Keep all existing tools in a secondary, collapsed workspace. This runs
 # before the question form so any approved manual baseline can be explicitly
 # selected as a follow-up without silent fallback.
@@ -241,7 +262,8 @@ if current_baselines:
 with st.form('question_form'):
     question=st.text_input('Your question',max_chars=4000,key='stage1_question',
         placeholder='For example: Which category has the highest total of revenue?')
-    submit=st.form_submit_button('Analyse',type='primary',use_container_width=True)
+    submit=st.form_submit_button('Analyse',type='primary',use_container_width=True,
+                                 disabled=bool(st.session_state.get('gemini_busy',False)))
 if submit:
     q=question.strip()
     if not q:
@@ -274,7 +296,7 @@ if submit:
             with st.spinner('Running supported calculations…'):
                 try:
                     selected_baseline=current_baselines.get(baseline_label)
-                    answer=ask(df,q,baseline_spec=(selected_baseline or {}).get('spec'))
+                    answer=gemini_with_feedback(df,q,baseline_spec=(selected_baseline or {}).get('spec'))
                     st.session_state.pop('stage1_provider_error',None)
                     st.session_state['last_answer']={'dataset_fingerprint':source_hash,
                         'submitted_question':q,'response':answer,'baseline_reference':selected_baseline}
@@ -395,7 +417,7 @@ if saved:
                     else:
                         try:
                             with st.spinner('Reconsidering the original question with your clarification…'):
-                                new_response=ask(df,submitted,clarification_context=combined_context)
+                                new_response=gemini_with_feedback(df,submitted,clarification_context=combined_context)
                             st.session_state.pop('last_clarified',None)
                             st.session_state.pop('last_ai_comparison',None)
                             st.session_state.pop('stage1_provider_error',None)
@@ -421,7 +443,7 @@ if saved:
         else:
             st.warning('PENDING USER CONFIRMATION — the proposed Challenge has not been calculated.')
     elif status in ('error','limited','unverified') and not changed_question:
-        problem=response_failure_kind(answer)
+        problem='provider' if answer.get('provider_diagnostic') else response_failure_kind(answer)
         if problem=='calculation':
             st.error('The calculation could not be completed. Check column choices, filters, and any date format; correct the definition and retry Analyse or use the advanced local tools.')
         elif problem=='provider':
@@ -430,6 +452,11 @@ if saved:
             st.info('No supported calculation was completed. Specify the grouping, measure, or date format and retry Analyse, or use a local tool.')
         with st.expander('Provider or calculation details'):
             st.write(str(answer.get('answer','No verified calculation available.')))
+            diagnostic=answer.get('provider_diagnostic')
+            if diagnostic:
+                st.json(diagnostic)
+                if diagnostic.get('partial_tools_completed'):
+                    st.caption('Earlier tools may have calculated partial results, but this request did not finish. No final answer is verified.')
             for event in answer.get('trace',[]):
                 detail=event.get('result',{})
                 if isinstance(detail,dict) and detail.get('error'):
