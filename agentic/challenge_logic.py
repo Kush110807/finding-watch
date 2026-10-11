@@ -98,6 +98,13 @@ def changed_filters(original, action, *, index=None, condition=None):
     raise AnalysisError('Choose one change: add, replace, or remove.')
 
 
+
+def clear_challenge_review(state, review_key, completed_key):
+    """Editing revokes confirmation as well as the reviewed definition."""
+    state.pop(review_key,None)
+    state.pop(completed_key,None)
+
+
 def definition_line(spec):
     filters=spec.get('filters',[])
     return '; '.join(filter_description(f) for f in filters) if filters else 'All records'

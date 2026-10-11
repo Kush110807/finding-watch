@@ -6,7 +6,8 @@ import streamlit as st
 from engine import AnalysisError, load_csv, numeric_columns, run_tool
 from comparisons import prepare_comparison, execute_comparison
 from presentation import (metric_choices,group_candidates,missing_product_context,
-                          filter_description,confirmed_comparison_matches)
+                          filter_description,confirmed_comparison_matches,clarification_definition,
+                          same_numeric_grouping_explanation,grouping_phrase)
 from ui_components import analysis_result,comparison_result,source_definition,evidence_download
 from stage1_logic import suggested_questions, candidate_title
 from stage2_logic import (calculated_choices, result_option_map, result_selection_key,
@@ -321,12 +322,22 @@ if saved:
             index=None,key='clarify_method')
         if method=='Choose a grouping and calculation':
             options=metric_choices(cols,nums)
-            with st.form('clarify_definition'):
-                group=st.selectbox('Which column should be compared?',group_candidates(cols,submitted),
-                    index=None,placeholder='Choose a column',key='clarify_group')
-                measure=st.selectbox('Which calculation should define “best”?',list(options),
-                    index=None,placeholder='Choose a calculation',key='clarify_metric')
-                clarify_submit=st.form_submit_button('Analyse with my choices',type='primary')
+            # Ordinary widgets (not a Streamlit form) allow the definition and
+            # the same-column warning to update BEFORE the explicit Analyse click.
+            # Choosing a value never starts a calculation.
+            st.caption('Choose what to compare. For example: '+ '; '.join(
+                f'choose “{c}” to compare {grouping_phrase(c)}' for c in cols[:4])+'.')
+            group=st.selectbox('What should the results be grouped by?',group_candidates(cols,submitted),
+                index=None,placeholder='Choose a grouping column',key='clarify_group')
+            measure=st.selectbox('What should be measured?',list(options),
+                index=None,placeholder='Choose a calculation',key='clarify_metric')
+            if group is not None and measure is not None:
+                selected_choice=options[measure]
+                st.markdown('**Your definition:** '+clarification_definition(
+                    group,selected_choice['operation'],selected_choice['metric']))
+                caveat=same_numeric_grouping_explanation(group,selected_choice['metric'])
+                if caveat: st.warning(caveat)
+            clarify_submit=st.button('Analyse with my choices',type='primary',key='submit_clarified_definition')
             if clarify_submit:
                 if not group or not measure:
                     st.error('Choose both a grouping column and a calculation before analysing.')
@@ -432,9 +443,9 @@ if saved:
         if len(choices)==1:
             chosen=(choices[0]['position'],choices[0]['event'])
         elif len(choices)>1:
-            st.info('Several calculations completed. Choose which definition to inspect; no result is automatically treated as the intended answer.')
+            st.info('Several results are available. Choose one to view. Nothing is selected automatically.')
             options=result_option_map(choices)
-            selected_label=st.selectbox('Which calculated result would you like to see?',
+            selected_label=st.selectbox('Which result would you like to see?',
                 list(options),index=0,key=selection_key)
             matching=options[selected_label]
             chosen=(matching['position'],matching['event']) if matching else None

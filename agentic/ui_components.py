@@ -5,7 +5,7 @@ import streamlit as st
 from download_keys import evidence_key
 from stage1_logic import two_group_difference
 from presentation import (summary, comparison_summary, comparison_table, label, number,
-                          metric_definition, spec_description, filter_description,chart_safe,display_rows,readable_measure,simple_group_table,visible_result_rows,important_notices,observed_period_label,detailed_group_table,preview_counts)
+                          metric_definition, spec_description, filter_description,chart_safe,display_rows,readable_measure,simple_group_table,visible_result_rows,important_notices,detailed_group_table,preview_counts,time_chart_points)
 
 
 def evidence_download(data, filename, caption='Download complete, unmodified calculation evidence', *,
@@ -115,12 +115,20 @@ def analysis_result(output, *, heading='Calculated result', model_tool=False, qu
     if tool in ('grouped_summary','time_trend') and 2<=len(rows)<=8 and chart_safe(rows):
         axis='group_value' if tool=='grouped_summary' else 'period_start'
         measure=readable_measure(spec).capitalize()
-        labels=[label(r.get(axis)) if tool=='grouped_summary' else observed_period_label(r.get(axis),args.get('frequency')) for r in rows]
-        chart=pd.DataFrame({'Group':labels,measure:[r['value'] for r in rows]})
-        if chart['Group'].is_unique:
-            if tool=='time_trend':
-                st.line_chart(chart,x='Group',y=measure,color='#087F78',height=220,use_container_width=True)
-            else:
+        if tool=='time_trend':
+            # Use actual observed period dates, not alphabetically sorted labels
+            # ("Feb 2026" otherwise precedes "Jan 2026"). Temporal bars do not
+            # interpolate or invent values for missing periods.
+            time_points=time_chart_points(rows,args.get('frequency'))
+            if time_points is not None:
+                period_axis={'month':'Month','week':'Week starting','day':'Date'}.get(args.get('frequency'),'Period')
+                chart=pd.DataFrame(time_points).rename(columns={'Period':period_axis,'Value':measure})
+                st.bar_chart(chart,x=period_axis,y=measure,color='#087F78',height=220,
+                             use_container_width=True)
+        else:
+            labels=[label(r.get(axis)) for r in rows]
+            chart=pd.DataFrame({'Group':labels,measure:[r['value'] for r in rows]})
+            if chart['Group'].is_unique:
                 st.bar_chart(chart,x='Group',y=measure,horizontal=True,color='#087F78',
                              height=min(80+50*len(rows),250),use_container_width=True)
     elif tool in ('grouped_summary','time_trend') and rows and not chart_safe(rows):

@@ -5,7 +5,7 @@ import streamlit as st
 from engine import AnalysisError
 from comparisons import prepare_comparison, execute_comparison
 from challenge_logic import (identity, column_operators, categorical_values, parse_numeric,
-                             changed_filters, parse_contains_text, FRIENDLY_OPERATORS, definition_line, unchanged_line)
+                             changed_filters, parse_contains_text, FRIENDLY_OPERATORS, definition_line, unchanged_line, clear_challenge_review)
 from presentation import filter_description, confirmed_comparison_matches
 from ui_components import comparison_result
 
@@ -71,6 +71,21 @@ def show_challenge(df, baseline_output, baseline_binding, *, prefix):
         st.session_state.pop(review_key,None)
         st.session_state.pop(completed_key,None)
         st.session_state[editor_key]=False
+    # A completed comparison is an answer, not an open form. Render its
+    # conclusion/table first and definitions exactly once via comparison_result.
+    # The editor is reopened only after explicitly revoking that confirmation.
+    reviewed=st.session_state.get(review_key)
+    stored=st.session_state.get(completed_key)
+    active_completed=bool(reviewed and reviewed.get('context')==context and
+        confirmed_comparison_matches(stored,reviewed['plan'],baseline_binding))
+    if active_completed:
+        comparison_result(stored['result'],heading='User-confirmed Challenge',
+                          filename=prefix+'_comparison.json',download_location=prefix+'_comparison')
+        if st.button('Edit condition',key=namespace+'_edit_completed'):
+            clear_challenge_review(st.session_state,review_key,completed_key)
+            st.session_state[editor_key]=True
+            st.rerun()
+        return
     if not st.session_state.get(editor_key):
         if st.button('Test another condition',key=namespace+'_open'):
             st.session_state[editor_key]=True
@@ -122,8 +137,7 @@ def show_challenge(df, baseline_output, baseline_binding, *, prefix):
             st.error('Change the condition and try again: '+str(exc))
     if review:
         if st.button('Edit condition',key=namespace+'_edit'):
-            st.session_state.pop(review_key,None)
-            st.session_state.pop(completed_key,None)
+            clear_challenge_review(st.session_state,review_key,completed_key)
             st.rerun()
         plan=review['plan']
         record=st.session_state.get(completed_key)
@@ -147,6 +161,7 @@ def show_challenge(df, baseline_output, baseline_binding, *, prefix):
                     st.error('Could not compare these conditions: '+str(exc)+' Change the condition and review again.')
                 else:
                     st.session_state[completed_key]={'plan':plan,'baseline_binding':baseline_binding,'result':result}
+                    st.session_state[editor_key]=False
                     st.rerun()
         else:
             comparison_result(record['result'],heading='User-confirmed Challenge',

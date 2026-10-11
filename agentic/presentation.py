@@ -78,6 +78,51 @@ def observed_period_label(period, frequency):
         return str(period)
 
 
+
+def time_chart_points(rows, frequency):
+    """Observed time buckets ordered by their real start dates, not text labels.
+
+    Missing months/weeks/days are never fabricated. Chart callers should use
+    the datetime value as a *temporal* x-axis and should not interpolate gaps.
+    Numeric values are kept as supplied; the caller applies chart_safe first.
+    """
+    if frequency not in ('month','week','day'):
+        return None
+    points=[]
+    for row in rows:
+        try:
+            instant=datetime.strptime(row['period_start'],'%Y-%m-%d')
+        except (KeyError,ValueError,TypeError):
+            return None
+        points.append({'Period':instant,'Value':row.get('value')})
+    points.sort(key=lambda item:item['Period'])
+    return points
+
+
+def grouping_phrase(column):
+    """Readable group labels without assuming product, quantity or units."""
+    name=str(column).strip()
+    common={'category':'categories','region':'regions','city':'cities'}
+    return common.get(name.lower(),f'“{name}” values')
+
+
+def clarification_definition(group, operation, metric=None):
+    """Preview a user's explicit choice; not an executable model proposal."""
+    if not group or not operation:
+        return None
+    args={'group':group,'operation':operation}
+    if metric is not None:
+        args['metric']=metric
+    return f'Compare {grouping_phrase(group)} by {readable_measure({"arguments":args})}.'
+
+
+def same_numeric_grouping_explanation(group, metric):
+    if group is not None and metric is not None and group==metric:
+        return (f'“{group}” is both the grouping column and the numeric measure. '
+                'Each distinct numeric value becomes a group, then that same column is calculated within each group. '
+                'Check that this is the comparison you want before submitting.')
+    return None
+
 def summary(output):
     """Readable facts from completed evidence, not model prose or guessing."""
     tool=output['tool']; rows=output.get('rows',[])
