@@ -9,7 +9,9 @@ from presentation import (metric_choices,group_candidates,missing_product_contex
                           filter_description,confirmed_comparison_matches)
 from ui_components import analysis_result,comparison_result,source_definition,evidence_download
 from stage1_logic import suggested_questions, candidate_title
-from stage2_logic import calculated_choices, result_selection_key, append_clarification_context, response_failure_kind
+from stage2_logic import (calculated_choices, result_option_map, result_selection_key,
+                          bind_selected_challenge_occurrence,
+                          append_clarification_context, response_failure_kind)
 
 ROOT=Path(__file__).resolve().parent
 
@@ -425,17 +427,22 @@ if saved:
     if not changed_question and status=='evidence_available':
         choices=calculated_choices(answer.get('trace',[]))
         chosen=None
+        selection_key=result_selection_key(source_hash,submitted,answer,
+            st.session_state.get('stage2_response_serial',0))
         if len(choices)==1:
             chosen=(choices[0]['position'],choices[0]['event'])
         elif len(choices)>1:
             st.info('Several calculations completed. Choose which definition to inspect; no result is automatically treated as the intended answer.')
-            selection_key=result_selection_key(source_hash,submitted,answer,
-                st.session_state.get('stage2_response_serial',0))
             options=result_option_map(choices)
             selected_label=st.selectbox('Which calculated result would you like to see?',
                 list(options),index=0,key=selection_key)
             matching=options[selected_label]
             chosen=(matching['position'],matching['event']) if matching else None
+        # The selected occurrence drives Challenge approval even when the
+        # chosen tool is NOT grouped_summary (and no Challenge UI is shown).
+        # Identical rerenders preserve an already confirmed comparison.
+        bind_selected_challenge_occurrence(st.session_state,selection_key,
+            chosen[0] if chosen else None)
         if chosen:
             index,event=chosen
             analysis_result(event['result'],heading='Calculated finding',model_tool=True,
@@ -448,11 +455,6 @@ if saved:
                      'label':f'Selected Gemini calculation {index}'},prefix='ai_selected')
         else:
             st.session_state.pop('last_visible_ai_trace_index',None)
-            # Returning to the explicit neutral option revokes any selection-
-            # bound approval, including a Challenge from the same trace entry.
-            st.session_state.pop('last_ai_selected_comparison',None)
-            st.session_state.pop('s3_ai_selected_review',None)
-            st.session_state.pop('s3_ai_selected_context',None)
         with st.expander('Other calculations and execution details',expanded=False):
             st.caption('These are executed operations, not independent proof that the model understood your intent.')
             for i,event in enumerate(answer.get('trace',[]),1):

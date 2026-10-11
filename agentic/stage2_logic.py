@@ -59,6 +59,28 @@ def result_option_map(choices):
         options[label]=choice
     return options
 
+
+def bind_selected_challenge_occurrence(state, selection_scope, trace_position):
+    """Invalidate selected-Gemini Challenge when its selected occurrence changes.
+
+    A non-grouped selection must revoke an earlier grouped comparison too:
+    the Challenge editor is not rendered for a non-grouped result and cannot
+    perform its own context invalidation. A rerender with the same response
+    scope and occurrence must leave a completed confirmation untouched.
+    """
+    if not isinstance(selection_scope,str) or not selection_scope:
+        raise ValueError('The response selection scope must be nonempty.')
+    if trace_position is not None and (type(trace_position) is not int or trace_position < 1):
+        raise ValueError('The chosen trace position must be a positive integer or None.')
+    binding=(selection_scope,trace_position)
+    if state.get('stage2_challenge_selection_binding')==binding:
+        return False
+    for name in ('last_ai_selected_comparison', 's3_ai_selected_review',
+                 's3_ai_selected_context', 's3_ai_selected_editor'):
+        state.pop(name,None)
+    state['stage2_challenge_selection_binding']=binding
+    return True
+
 def result_selection_key(dataset,question,response,serial=0):
     """Scope a selection to one dataset, original question and exact response.
 

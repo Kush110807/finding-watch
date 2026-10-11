@@ -6,7 +6,8 @@ from datetime import datetime
 import pandas as pd
 from engine import load_csv, run_tool, AnalysisError
 from stage2_logic import (calculated_choices, result_option_map, RESULT_CHOICE_PROMPT,
-                          result_selection_key, append_clarification_context, response_failure_kind)
+                          result_selection_key, bind_selected_challenge_occurrence,
+                          append_clarification_context, response_failure_kind)
 from presentation import summary, visible_result_rows, important_notices, observed_period_label, chart_safe
 
 DEMO=b'date,category,region,revenue,units\n2026-01-01,Coffee,North,1200,40\n2026-01-02,Snacks,South,600,30\n2026-02-01,Coffee,South,1800,60\n2026-02-02,Snacks,North,800,40\n'
@@ -141,6 +142,42 @@ class Stage2State(unittest.TestCase):
         for sample in samples:
             with self.subTest(sample=sample), self.assertRaises(ValueError):
                 result_option_map(sample)
+
+    def test_selected_gemini_challenge_resets_on_group_to_nongroup_and_back(self):
+        state={}
+        self.assertTrue(bind_selected_challenge_occurrence(state,'response-v1',2))
+        for key in ('last_ai_selected_comparison','s3_ai_selected_review',
+                    's3_ai_selected_context','s3_ai_selected_editor'):
+            state[key]='approved'
+        # A pure rerender with the same calculation does NOT discard approval.
+        self.assertFalse(bind_selected_challenge_occurrence(state,'response-v1',2))
+        self.assertEqual(state['last_ai_selected_comparison'],'approved')
+        # Changing to time analysis (which does not render the Challenge UI)
+        # must revoke every piece of the old plan/approval.
+        self.assertTrue(bind_selected_challenge_occurrence(state,'response-v1',3))
+        for key in ('last_ai_selected_comparison','s3_ai_selected_review',
+                    's3_ai_selected_context','s3_ai_selected_editor'):
+            self.assertNotIn(key,state)
+        self.assertTrue(bind_selected_challenge_occurrence(state,'response-v1',2))
+        self.assertNotIn('last_ai_selected_comparison',state)
+        self.assertFalse(bind_selected_challenge_occurrence(state,'response-v1',2))
+
+    def test_selected_gemini_challenge_resets_for_new_response_or_neutral_choice(self):
+        state={}
+        bind_selected_challenge_occurrence(state,'response-v1',2)
+        state['last_ai_selected_comparison']='approved'
+        self.assertTrue(bind_selected_challenge_occurrence(state,'response-v2',2))
+        self.assertNotIn('last_ai_selected_comparison',state)
+        state['last_ai_selected_comparison']='approved-again'
+        self.assertTrue(bind_selected_challenge_occurrence(state,'response-v2',None))
+        self.assertNotIn('last_ai_selected_comparison',state)
+        self.assertFalse(bind_selected_challenge_occurrence(state,'response-v2',None))
+
+    def test_selected_gemini_challenge_rejects_invalid_trace_reference(self):
+        for scope,index in [('',1),(None,1),('response',0),('response',-1),
+                            ('response','2'),('response',True)]:
+            with self.subTest(scope=scope,index=index),self.assertRaises(ValueError):
+                bind_selected_challenge_occurrence({},scope,index)
 
     def test_definition_labels_expose_filters_and_periods(self):
         df=load_csv(DEMO)

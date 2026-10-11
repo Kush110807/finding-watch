@@ -943,6 +943,75 @@ class Stage3ChallengeAppTests(unittest.TestCase):
         self.assertEqual(at.session_state['last_ai_selected_comparison']['baseline_binding']['trace_index'],2)
         _assert_download(at,'ai_selected_comparison','Download comparison JSON')
 
+    def test_actual_multiple_result_picker_and_grouped_to_time_to_grouped_revokes_approval(self):
+        """Exercises the real AppTest picker, including the non-grouped detour.
+
+        Selecting an earlier group again must not restore its confirmation,
+        but an ordinary rerender of the same selection must preserve it.
+        """
+        df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
+        inspection=run_tool(df,'inspect_dataset',{})
+        grouped=run_tool(df,'grouped_summary',{'group':'category','metric':'revenue','operation':'sum'})
+        monthly=run_tool(df,'time_trend',{'date_column':'date','date_format':'%Y-%m-%d',
+                         'frequency':'month','metric':'revenue','operation':'sum'})
+        response={'status':'evidence_available','answer':'Model commentary unverified.',
+            'trace':[{'tool':'inspect_dataset','arguments':{},'result':inspection},
+                     {'tool':'grouped_summary','arguments':grouped['evidence']['executed_spec']['arguments'],
+                      'result':grouped},
+                     {'tool':'time_trend','arguments':monthly['evidence']['executed_spec']['arguments'],
+                      'result':monthly}],
+            'calculation_verified':True,'explanation_verified':False}
+        with patch('agent.ask',return_value=response):
+            at=_loaded()
+            _field(at,'checkbox','I agree to send my question and relevant dataset information to Gemini.').check().run()
+            _field(at,'text_input','Your question').input('Compare revenue by category or month').run()
+            _field(at,'button','Analyse').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        picker=_field(at,'selectbox','Which calculated result would you like to see?')
+        self.assertEqual(len(picker.options),3)
+        self.assertEqual(picker.value,'Choose a calculation')
+        self.assertNotIn('last_ai_selected_comparison',at.session_state)
+        picker.select_index(1).run()  # one-based trace occurrence 2
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['last_visible_ai_trace_index'],2)
+        _assert_download(at,'ai_primary_result','Download original result JSON',2)
+        _assert_download(at,'ai_support_result','Download this tool result JSON',1)
+        _stage3_open_add_review(at,'region',0)
+        _field(at,'button','Confirm and compare').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['last_ai_selected_comparison']['result']['status'],'completed')
+        _assert_download(at,'ai_selected_comparison','Download comparison JSON')
+        # This rerender does not change the selected occurrence.
+        at.run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertIn('last_ai_selected_comparison',at.session_state)
+        _assert_download(at,'ai_selected_comparison','Download comparison JSON')
+        # Select a non-grouped result: no Challenge component will render.
+        _field(at,'selectbox','Which calculated result would you like to see?').select_index(2).run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['last_visible_ai_trace_index'],3)
+        self.assertNotIn('last_ai_selected_comparison',at.session_state)
+        self.assertNotIn('s3_ai_selected_review',at.session_state)
+        self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
+        self.assertFalse(any(b.label=='Test another condition' for b in at.button))
+        _assert_download(at,'ai_primary_result','Download original result JSON',3)
+        # Returning to the ORIGINAL grouped occurrence cannot restore approval.
+        _field(at,'selectbox','Which calculated result would you like to see?').select_index(1).run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['last_visible_ai_trace_index'],2)
+        self.assertNotIn('last_ai_selected_comparison',at.session_state)
+        self.assertNotIn('s3_ai_selected_review',at.session_state)
+        self.assertFalse(any(b.label=='Confirm and compare' for b in at.button))
+        self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
+        self.assertTrue(any(b.label=='Test another condition' for b in at.button))
+        # An explicit fresh review AND confirmation are required again.
+        _stage3_open_add_review(at,'region',0)
+        self.assertNotIn('last_ai_selected_comparison',at.session_state)
+        self.assertTrue(any(b.label=='Confirm and compare' for b in at.button))
+        _field(at,'button','Confirm and compare').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['last_ai_selected_comparison']['result']['status'],'completed')
+
     def test_selected_gemini_grouped_finding_can_open_challenge(self):
         from engine import run_tool
         df=load_csv((Path(__file__).resolve().parents[1]/'data'/'demo_sales.csv').read_bytes())
