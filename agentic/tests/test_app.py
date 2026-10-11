@@ -908,9 +908,47 @@ class Stage3ChallengeAppTests(unittest.TestCase):
                          [('Coffee',3000,1200),('Snacks',1400,800)])
         self.assertTrue(any('Coffee remains the leader' in str(x.value) for x in at.markdown))
         _assert_download(at,'suggested_comparison','Download comparison JSON')
-        _field(at,'selectbox','Value').select_index(1).run()
+        # A confirmed Challenge is result-first: no editable condition is visible.
+        self.assertFalse(any(x.label in ('What would you like to change?',
+                                         'Column','Condition','Value') for x in at.selectbox))
+        self.assertFalse(any(b.label=='Review comparison' for b in at.button))
+        self.assertTrue(any(b.label=='Edit condition' for b in at.button))
+        # Editing explicitly revokes the completed result and reviewed plan.
+        _field(at,'button','Edit condition').click().run()
+        self.assertFalse(at.exception,str(at.exception))
         self.assertNotIn('last_suggested_comparison',at.session_state)
+        self.assertNotIn('s3_suggested_review',at.session_state)
         self.assertFalse(any('Download comparison JSON'==d.label for d in at.download_button))
+        self.assertFalse(any('Coffee remains the leader' in str(x.value) for x in at.markdown))
+        self.assertFalse(any(b.label=='Confirm and compare' for b in at.button))
+        # Rechoose South explicitly using the now-visible editor; no auto-run.
+        _field(at,'selectbox','What would you like to change?').select('Add condition').run()
+        _field(at,'selectbox','Column').select('region').run()
+        _field(at,'selectbox','Condition').select('eq').run()
+        _field(at,'selectbox','Value').select_index(1).run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertNotIn('s3_suggested_review',at.session_state)
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
+        _field(at,'button','Review comparison').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        review=at.session_state['s3_suggested_review']['plan']
+        self.assertEqual(review['challenged_spec']['filters'],[
+            {'field':'region','operator':'eq','value':'South'}])
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
+        _field(at,'button','Confirm and compare').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        updated=at.session_state['last_suggested_comparison']['result']
+        self.assertEqual(updated['status'],'completed')
+        self.assertEqual(updated['accounting']['baseline']['selected_rows'],4)
+        self.assertEqual(updated['accounting']['challenged']['selected_rows'],2)
+        self.assertEqual([(r['group_value'],r['baseline_value'],r['challenged_value'])
+                          for r in updated['comparison']['all_results']],
+                         [('Coffee',3000,1800),('Snacks',1400,600)])
+        self.assertTrue(any('Coffee remains the leader' in str(x.value) for x in at.markdown))
+        self.assertFalse(any(x.label=='Value' for x in at.selectbox))
+        _assert_download(at,'suggested_comparison','Download comparison JSON')
 
     def test_edit_condition_returns_to_pending(self):
         at=_select_local_suggestion(_loaded())
@@ -1151,9 +1189,31 @@ class Stage3ContainsTextAppTests(unittest.TestCase):
         result=at.session_state['last_suggested_comparison']['result']
         self.assertEqual(result['accounting']['challenged']['selected_rows'],2)
         _assert_download(at,'suggested_comparison','Download comparison JSON')
-        _field(at,'text_input','Text to find').input('Sou').run()
+        self.assertFalse(any(x.label=='Text to find' for x in at.text_input))
+        # Completed views collapse the editor; a new substring requires Edit.
+        _field(at,'button','Edit condition').click().run()
+        self.assertFalse(at.exception,str(at.exception))
         self.assertNotIn('last_suggested_comparison',at.session_state)
+        self.assertNotIn('s3_suggested_review',at.session_state)
         self.assertFalse(any(d.label=='Download comparison JSON' for d in at.download_button))
+        _field(at,'selectbox','What would you like to change?').select('Add condition').run()
+        _field(at,'selectbox','Column').select('region').run()
+        _field(at,'selectbox','Condition').select('contains').run()
+        _field(at,'text_input','Text to find').input('Sou').run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertNotIn('s3_suggested_review',at.session_state)
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        _field(at,'button','Review comparison').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['s3_suggested_review']['plan']['challenged_spec']['filters'],[
+            {'field':'region','operator':'contains','value':'Sou'}])
+        self.assertNotIn('last_suggested_comparison',at.session_state)
+        _field(at,'button','Confirm and compare').click().run()
+        self.assertFalse(at.exception,str(at.exception))
+        self.assertEqual(at.session_state['last_suggested_comparison']['result']['status'],'completed')
+        self.assertEqual(at.session_state['last_suggested_comparison']['result']['accounting']['challenged']['selected_rows'],2)
+        _assert_download(at,'suggested_comparison','Download comparison JSON')
+        self.assertFalse(any(x.label=='Text to find' for x in at.text_input))
 
     def test_equality_keeps_existing_value_choice(self):
         at=_select_local_suggestion(_loaded())
