@@ -7,7 +7,8 @@ from engine import AnalysisError, load_csv, numeric_columns, run_tool
 from comparisons import prepare_comparison, execute_comparison
 from presentation import (metric_choices,group_candidates,missing_product_context,
                           filter_description,confirmed_comparison_matches,clarification_definition,
-                          same_numeric_grouping_explanation,grouping_phrase)
+                          same_numeric_grouping_explanation,grouping_phrase,
+                          preview_display_table)
 from ui_components import analysis_result,comparison_result,source_definition,evidence_download
 from stage1_logic import suggested_questions, candidate_title
 from stage2_logic import (calculated_choices, result_option_map, result_selection_key,
@@ -80,13 +81,13 @@ cols=list(df.columns); nums=numeric_columns(df)
 st.markdown(f'**{filename}**  ·  {len(df):,} records  ·  {len(cols)} columns')
 with st.expander('Inspect dataset · sample and column information',expanded=False):
     st.caption('Dataset fingerprint: '+source_hash+' · Calculations use the full dataset, not just the preview.')
-    st.dataframe(df.head(30).fillna('Missing').astype(str),hide_index=True,use_container_width=True,height=240)
+    st.dataframe(preview_display_table(df.head(30)),hide_index=True,use_container_width=True,height=240)
     if len(df)>30: st.caption('Sample shows 30 records; every calculation uses the full dataset.')
     if st.button('Profile all columns',key='profile_columns'):
         st.session_state['stage1_profile']={'fingerprint':source_hash,'output':run_tool(df,'inspect_dataset',{})}
     profile=st.session_state.get('stage1_profile')
     if profile and profile['fingerprint']==source_hash:
-        st.dataframe(pd.DataFrame(profile['output']['rows']).astype(str),hide_index=True,use_container_width=True)
+        st.dataframe(preview_display_table(pd.DataFrame(profile['output']['rows'])),hide_index=True,use_container_width=True)
         st.json(profile['output']['evidence'])
         evidence_download(profile['output'],'dataset_profile.json',location='stage1_profile')
 

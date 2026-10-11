@@ -5,7 +5,19 @@ UI callers must preserve the source JSON and require explicit user selection.
 """
 from collections.abc import Mapping
 from datetime import datetime
+import pandas as pd
 
+
+
+def preview_display_table(frame):
+    """Return a display-only string table without changing the source DataFrame.
+
+    Nullable pandas numeric extension dtypes reject filling missing values with
+    text. Convert the preview COPY to object scalars before marking missing
+    cells, then stringify scalar by scalar. Never route this table into analysis.
+    """
+    display = frame.astype(object).copy()
+    return display.map(lambda value: 'Missing' if pd.isna(value) else str(value))
 
 def label(value):
     return '(missing group label)' if value is None else str(value)

@@ -124,6 +124,59 @@ class AppTests(unittest.TestCase):
         self.assertEqual(len(at.error),1)
 
 
+class NullableCsvUploadAppTests(unittest.TestCase):
+    """Real Streamlit AppTest, with file-picker payload injected for automation.
+
+    Streamlit AppTest has no supported direct file-uploader selection API;
+    only its upload transport is patched. The real app/UI and analysis run.
+    """
+
+    def test_unfamiliar_nullable_upload_inspection_and_grouped_analysis(self):
+        class UploadedCsv:
+            name = 'unfamiliar_nullable_numeric.csv'
+            def getvalue(self):
+                return (b'ref_code,zone_label,measurement\n'
+                        b'0001,Alpha,10\n'
+                        b'0002,Alpha,\n'
+                        b'0003,Beta,5\n')
+
+        with patch('streamlit.file_uploader', return_value=UploadedCsv()):
+            at = _fresh()
+            self.assertFalse(at.exception, str(at.exception))
+            self.assertEqual(at.session_state['entry_mode'], 'upload')
+            self.assertTrue(any('unfamiliar_nullable_numeric.csv' in str(m.value)
+                                for m in at.markdown))
+            self.assertTrue(any('3 records' in str(m.value)
+                                for m in at.markdown))
+            self.assertTrue(any('Missing' in str(t.value) for t in at.dataframe))
+
+            _field(at, 'button', 'Profile all columns').click().run()
+            self.assertFalse(at.exception, str(at.exception))
+            profile = at.session_state['stage1_profile']['output']
+            self.assertEqual(profile['metadata']['total_rows'], 3)
+            self.assertEqual(next(r for r in profile['rows']
+                                  if r['column'] == 'measurement')['missing'], 1)
+            _assert_download(at, 'stage1_profile',
+                             'Download complete, unmodified calculation evidence')
+
+            _field(at, 'toggle', 'Advanced · five manual analysis tools').set_value(True).run()
+            _field(at, 'selectbox', 'Analysis tool').select('Summarise groups').run()
+            _field(at, 'selectbox', 'Group by').select('zone_label').run()
+            self.assertEqual(_field(at, 'selectbox', 'Numeric metric').value, 'measurement')
+            _run_button(at)
+            self.assertFalse(at.exception, str(at.exception))
+            self.assertFalse(at.error)
+            output = at.session_state['last_manual']['output']
+            self.assertEqual({r['group_value']: r['value'] for r in output['rows']},
+                             {'Alpha': 10, 'Beta': 5})
+            self.assertEqual(output['evidence']['accounting']['selected_rows'], 3)
+            self.assertEqual(output['evidence']['accounting']['operation_exclusions']
+                             ['missing_metric_excluded_from_values'], 1)
+            self.assertTrue(any('1 records lack a numeric value' in str(w.value)
+                                for w in at.warning))
+            _assert_download(at, 'manual_result', 'Download original result JSON')
+
+
 class ChatAppTests(unittest.TestCase):
     def _submit(self,at):
         return _field(at,'button','Analyse').click().run()
