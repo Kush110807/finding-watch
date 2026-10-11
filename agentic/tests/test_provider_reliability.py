@@ -18,6 +18,35 @@ class FakeClock:
             self.waits.append(seconds)
             self.t += seconds
 
+class LateWakeClock(FakeClock):
+    """A scheduler that wakes each sleep 13 seconds later than requested."""
+    def sleep(self, seconds):
+        with self.lock:
+            self.waits.append(seconds)
+            self.t += seconds + 13
+
+
+class ConcurrentLateWakeClock(FakeClock):
+    """Two waiters sleep concurrently, then both awaken at time 26."""
+    def __init__(self):
+        super().__init__()
+        self.wait_gate = threading.Barrier(2)
+
+    def sleep(self, seconds):
+        with self.lock:
+            self.waits.append(seconds)
+            number = len(self.waits)
+        if number <= 2:
+            # No fake-clock progress until both callers are sleeping.
+            # These sleepers are not allowed to hold the pacer's mutex.
+            self.wait_gate.wait(timeout=5)
+            with self.lock:
+                self.t = max(self.t, 26)
+        else:
+            with self.lock:
+                self.t += seconds + 13
+
+
 class APIProblem(Exception):
     def __init__(self, status, details=None, headers=None):
         self.code = status
@@ -52,6 +81,51 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(set(f.result() for f in futures),{1,2})
         self.assertEqual(len(self.clock.waits),1)
         self.assertEqual(self.clock.waits[0],13)
+    def test_delayed_wakeup_rechecks_actual_admission_time(self):
+        late = LateWakeClock()
+        pacer = RequestPacer(clock=late.monotonic, sleep=late.sleep)
+        starts = []
+        for _ in range(3):
+            self.assertTrue(pacer.acquire(13, deadline=100))
+            starts.append(late.monotonic())
+        # Regression: the old reservation-based pacer admitted [0, 26, 26].
+        self.assertEqual(starts, [0, 26, 52])
+        self.assertTrue(all(b - a >= 13 for a, b in zip(starts, starts[1:])))
+        self.assertEqual(late.waits, [13, 13])
+
+    def test_concurrent_waiters_recheck_after_same_late_wakeup(self):
+        late = ConcurrentLateWakeClock()
+        pacer = RequestPacer(clock=late.monotonic, sleep=late.sleep)
+        self.assertTrue(pacer.acquire(13, deadline=120))  # Admit at time zero.
+        arrivals = threading.Barrier(3)
+
+        def worker():
+            arrivals.wait(timeout=5)
+            return pacer.acquire(13, deadline=120)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            jobs = [pool.submit(worker) for _ in range(2)]
+            arrivals.wait(timeout=5)
+            self.assertTrue(all(job.result(timeout=5) for job in jobs))
+        # Both initial waiters were released at the same late moment (26).
+        # One must wait AGAIN, because 26 can admit only one request.
+        self.assertEqual(late.waits[:2], [13, 13])
+        self.assertEqual(len(late.waits), 3)
+        self.assertGreaterEqual(late.monotonic(), 39)
+        self.assertEqual(pacer._last_admission, late.monotonic())
+
+    def test_deadline_expiry_does_not_reserve_or_consume_slot(self):
+        late = LateWakeClock()
+        pacer = RequestPacer(clock=late.monotonic, sleep=late.sleep)
+        self.assertTrue(pacer.acquire(13, deadline=100))
+        self.assertFalse(pacer.acquire(13, deadline=20))
+        self.assertEqual(late.monotonic(), 26)
+        self.assertEqual(pacer._last_admission, 0)
+        self.assertTrue(pacer.acquire(13, deadline=50))
+        self.assertEqual(pacer._last_admission, 26)
+        # No extra wait due to a phantom reservation by the expired caller.
+        self.assertEqual(late.waits, [13])
+
     def test_503_then_success_is_two_provider_calls(self):
         calls=[]
         def request():

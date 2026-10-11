@@ -51,25 +51,36 @@ class RetryPolicy:
 
 
 class RequestPacer:
-    """Reserve spaced request start times atomically; sleep WITHOUT holding lock."""
+    """Space actual request admissions; recheck after every wake without holding a lock.
+
+    Waiting callers do not reserve slots. A delayed or concurrent wake must
+    compete for the next admission under the lock, so expired targets cannot
+    lead to back-to-back provider requests.
+    """
     def __init__(self, *, clock=time.monotonic, sleep=time.sleep):
         self.clock, self.sleep = clock, sleep
         self._lock = threading.Lock()
-        self._next = 0.0
+        self._last_admission = None
 
     def acquire(self, interval, deadline, notify=None, attempt=1):
-        with self._lock:
-            now = self.clock()
-            target = max(now, self._next)
-            if target >= deadline:
-                return False
-            self._next = target + interval
-        wait = max(0.0, target - self.clock())
-        if wait:
+        while True:
+            with self._lock:
+                now = self.clock()
+                if now >= deadline:
+                    return False
+                earliest = (now if self._last_admission is None
+                            else self._last_admission + interval)
+                if now >= earliest:
+                    self._last_admission = now
+                    return True
+                if earliest >= deadline:
+                    return False
+                wait = earliest - now
+            # No lock is held during callbacks or sleep. After waking, repeat
+            # the deadline and spacing checks against the actual last admission.
             if notify:
                 notify({'event':'waiting', 'seconds':round(wait, 1), 'attempt':attempt})
             self.sleep(wait)
-        return self.clock() < deadline
 
 
 PROCESS_PACER = RequestPacer()
