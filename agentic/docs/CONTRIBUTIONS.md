@@ -17,3 +17,11 @@ The user's independent review accepted repaired M1 commit `4eb7ec4fffa4de1709bd3
 ## M2 work (9 October 2026)
 
 Under user-approved restricted scope, AI-assisted implementation added one-condition grouped comparison, condition preview, full-data evidence, exact integer deltas, absent/null/zero group distinctions, ties, minimal Streamlit confirmation controls, an agent proposal-only workflow tool, synthetic live-comparison script, M2 tests and documentation. The user defined acceptance criteria and will run independent review. M2 is **not** accepted until review. Agent/SDK/UI/live verification results must be separately reported; no API key was accessed, committed or packaged.
+
+## Final Stage 1–3 and release preparation status (11 October 2026)
+
+The user directed and independently reviewed successive Answer-first UI, clarification, recovery and confirmation-gated Challenge milestones. The user reports Stage 3 accepted at commit `754ec1cda8f917fbe62f242d503c654dca4138d6` with **239 successful Windows tests** plus working browser flows (chronological charts, readable clarification, collapsed completed Challenge, fresh approval after editing). Earlier live Gemini tool calls for monthly analysis and clarification, and a user-confirmed grouped revenue result, were reported successful on the user's machine. These findings have **not** been independently rerun with the user's credentials by this documentation authoring environment.
+
+The implementation, tests, UI iterations, repair patches and draft documentation were materially **AI-assisted (ChatGPT/Codex)**. The user specified requirements, reproduced findings, supplied Windows outputs, approved or rejected milestones and coordinated independent review. This record intentionally does **not** claim that all source was handwritten by the user, that memory/Revisit exists, or that a cloud deployment has been tested.
+
+Release preparation updated the root README, deployment guidance, demo plan and requirements checklist, based on current official task/hosting documentation; no model training, new analytical feature or cloud deployment occurred. Before public submission the user should inspect and edit this disclosure to reflect any additional contributions and be prepared to explain each module and test.
